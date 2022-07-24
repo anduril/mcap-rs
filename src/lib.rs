@@ -39,6 +39,7 @@ pub enum RecordBody<'a> {
         data: &'a [u8],
     },
     MessageIndex(records::MessageIndex),
+    ChunkIndex(records::ChunkIndex),
     EndOfData(records::EndOfData),
     Unknown(Cow<'a, [u8]>),
 }
@@ -77,11 +78,11 @@ impl<'a> LinearReader<'a> {
     }
 
     fn check_data_crc(self) -> McapResult<()> {
-        for record in self {
-            if let Ok(Record {
+        for record in self.flatten() {
+            if let Record {
                 contents: RecordBody::EndOfData(eod),
                 ..
-            }) = record
+            } = record
             {
                 if eod.data_section_crc == 0 {
                     debug!("File had no data section CRC");
@@ -94,7 +95,6 @@ impl<'a> LinearReader<'a> {
 
         Err(McapError::NoEndOfData)
     }
-
 }
 
 impl<'a> Iterator for LinearReader<'a> {
@@ -150,7 +150,7 @@ impl<'a> Iterator for LinearReader<'a> {
 fn read_record(kind: u8, body: &[u8]) -> binrw::BinResult<RecordBody<'_>> {
     macro_rules! record {
         ($b:ident) => {
-           Cursor::new($b).read_le()?
+            Cursor::new($b).read_le()?
         };
     }
 
@@ -172,6 +172,7 @@ fn read_record(kind: u8, body: &[u8]) -> binrw::BinResult<RecordBody<'_>> {
             RecordBody::Chunk { header, data }
         }
         0x07 => RecordBody::MessageIndex(record!(body)),
+        0x08 => RecordBody::ChunkIndex(record!(body)),
         0x0f => RecordBody::EndOfData(record!(body)),
         _ => RecordBody::Unknown(Cow::Borrowed(body)),
     })
