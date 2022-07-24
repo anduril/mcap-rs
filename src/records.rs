@@ -11,11 +11,11 @@ use std::{
 struct McapString {
     #[br(temp)]
     #[bw(calc = inner.len() as u32)]
-    len: u32,
+    pub len: u32,
 
     #[br(count = len, try_map = String::from_utf8)]
     #[bw(map = |s| s.as_bytes())]
-    inner: String,
+    pub inner: String,
 }
 
 /// Avoids taking a copy to turn a String to an McapString for serialization
@@ -65,35 +65,33 @@ fn write_vec<W: binrw::io::Write + binrw::io::Seek, T: binrw::BinWrite<Args = ()
 pub struct Header {
     #[br(map = |s: McapString| s.inner )]
     #[bw(write_with = write_string)]
-    profile: String,
+    pub profile: String,
 
     #[br(map = |s: McapString| s.inner )]
     #[bw(write_with = write_string)]
-    library: String,
+    pub library: String,
 }
 
 #[derive(Debug, BinRead, BinWrite)]
 pub struct Footer {
-    summary_start: u64,
-    summary_offset_start: u64,
-    summary_crc: u32,
+    pub summary_start: u64,
+    pub summary_offset_start: u64,
+    pub summary_crc: u32,
 }
 
 #[derive(Debug, BinRead, BinWrite)]
-pub struct Schema {
-    id: u16,
+pub struct SchemaHeader {
+    pub id: u16,
 
     #[br(map = |s: McapString| s.inner )]
     #[bw(write_with = write_string)]
-    name: String,
+    pub name: String,
 
     #[br(map = |s: McapString| s.inner )]
     #[bw(write_with = write_string)]
-    encoding: String,
+    pub encoding: String,
 
-    #[br(parse_with = parse_vec)]
-    #[bw(write_with = write_vec)]
-    data: Vec<u8>,
+    pub data_len: u32,
 }
 
 fn parse_string_map<R: Read + Seek>(
@@ -200,20 +198,20 @@ where
 
 #[derive(Debug, BinRead, BinWrite)]
 pub struct Channel {
-    id: u16,
-    schema_id: u16,
+    pub id: u16,
+    pub schema_id: u16,
 
     #[br(map = |s: McapString| s.inner )]
     #[bw(write_with = write_string)]
-    topic: String,
+    pub topic: String,
 
     #[br(map = |s: McapString| s.inner )]
     #[bw(write_with = write_string)]
-    message_encoding: String,
+    pub message_encoding: String,
 
     #[br(parse_with = parse_string_map)]
     #[bw(write_with = write_string_map)]
-    metadata: BTreeMap<String, String>,
+    pub metadata: BTreeMap<String, String>,
 }
 
 fn time_to_nanos(d: &SystemTime) -> u64 {
@@ -228,82 +226,179 @@ fn nanos_to_time(n: u64) -> SystemTime {
 
 #[derive(Debug, BinRead, BinWrite)]
 pub struct MessageHeader {
-    id: u16,
-    sequence: u32,
+    pub id: u16,
+    pub sequence: u32,
 
     #[br(map = nanos_to_time)]
     #[bw(map = time_to_nanos)]
-    log_time: SystemTime,
+    pub log_time: SystemTime,
 
     #[br(map = nanos_to_time)]
     #[bw(map = time_to_nanos)]
-    publish_time: SystemTime,
+    pub publish_time: SystemTime,
 }
 
 #[derive(Debug, BinRead, BinWrite)]
 pub struct ChunkHeader {
     #[br(map = nanos_to_time)]
     #[bw(map = time_to_nanos)]
-    message_start_time: SystemTime,
+    pub message_start_time: SystemTime,
 
     #[br(map = nanos_to_time)]
     #[bw(map = time_to_nanos)]
-    message_end_time: SystemTime,
+    pub message_end_time: SystemTime,
 
-    uncompressed_size: u64,
+    pub uncompressed_size: u64,
 
-    uncompressed_crc: u32,
+    pub uncompressed_crc: u32,
 
     #[br(map = |s: McapString| s.inner )]
     #[bw(write_with = write_string)]
-    compression: String,
+    pub compression: String,
 }
 
 #[derive(Debug, BinRead, BinWrite)]
 pub struct MessageIndexEntry {
     #[br(map = nanos_to_time)]
     #[bw(map = time_to_nanos)]
-    log_time: SystemTime,
+    pub log_time: SystemTime,
 
-    offset: u64,
+    pub offset: u64,
 }
 
 #[derive(Debug, BinRead, BinWrite)]
 pub struct MessageIndex {
-    channel_id: u16,
+    pub channel_id: u16,
 
     #[br(parse_with = parse_vec)]
     #[bw(write_with = write_vec)]
-    records: Vec<MessageIndexEntry>,
+    pub records: Vec<MessageIndexEntry>,
 }
 
 #[derive(Debug, BinRead, BinWrite)]
 pub struct ChunkIndex {
     #[br(map = nanos_to_time)]
     #[bw(map = time_to_nanos)]
-    message_start_time: SystemTime,
+    pub message_start_time: SystemTime,
 
     #[br(map = nanos_to_time)]
     #[bw(map = time_to_nanos)]
-    message_end_time: SystemTime,
+    pub message_end_time: SystemTime,
 
-    chunk_start_offset: u64,
+    pub chunk_start_offset: u64,
 
-    chunk_length: u64,
+    pub chunk_length: u64,
 
     #[br(parse_with = parse_int_map)]
     #[bw(write_with = write_int_map)]
-    message_index_offsets: BTreeMap<u16, u64>,
+    pub message_index_offsets: BTreeMap<u16, u64>,
 
-    message_index_length: u64,
+    pub message_index_length: u64,
 
     #[br(map = |s: McapString| s.inner )]
     #[bw(write_with = write_string)]
-    compression: String,
+    pub compression: String,
 
-    compressed_size: u64,
+    pub compressed_size: u64,
 
-    uncompressed_size: u64,
+    pub uncompressed_size: u64,
+}
+
+#[derive(Debug, BinRead, BinWrite)]
+pub struct AttachmentHeader {
+    #[br(map = nanos_to_time)]
+    #[bw(map = time_to_nanos)]
+    pub log_time: SystemTime,
+
+    #[br(map = nanos_to_time)]
+    #[bw(map = time_to_nanos)]
+    pub create_time: SystemTime,
+
+    #[br(map = |s: McapString| s.inner )]
+    #[bw(write_with = write_string)]
+    pub name: String,
+
+    #[br(map = |s: McapString| s.inner )]
+    #[bw(write_with = write_string)]
+    pub content_type: String,
+
+    pub data_len: u64,
+}
+
+#[derive(Debug, BinRead, BinWrite)]
+pub struct AttachmentIndex {
+    pub offset: u64,
+
+    pub length: u64,
+
+    #[br(map = nanos_to_time)]
+    #[bw(map = time_to_nanos)]
+    pub log_time: SystemTime,
+
+    #[br(map = nanos_to_time)]
+    #[bw(map = time_to_nanos)]
+    pub create_time: SystemTime,
+
+    pub data_size: u64,
+
+    #[br(map = |s: McapString| s.inner )]
+    #[bw(write_with = write_string)]
+    pub name: String,
+
+    #[br(map = |s: McapString| s.inner )]
+    #[bw(write_with = write_string)]
+    pub content_type: String,
+}
+
+#[derive(Debug, BinRead, BinWrite)]
+pub struct Statistics {
+    pub message_count: u64,
+    pub schema_count: u16,
+    pub channel_count: u32,
+    pub attachment_count: u32,
+    pub metadata_count: u32,
+    pub chunk_count: u32,
+
+    #[br(map = nanos_to_time)]
+    #[bw(map = time_to_nanos)]
+    pub message_start_time: SystemTime,
+
+    #[br(map = nanos_to_time)]
+    #[bw(map = time_to_nanos)]
+    pub message_end_time: SystemTime,
+
+    #[br(parse_with = parse_int_map)]
+    #[bw(write_with = write_int_map)]
+    pub message_index_offsets: BTreeMap<u16, u64>,
+}
+
+#[derive(Debug, BinRead, BinWrite)]
+pub struct Metadata {
+    #[br(map = |s: McapString| s.inner )]
+    #[bw(write_with = write_string)]
+    pub name: String,
+
+    #[br(parse_with = parse_string_map)]
+    #[bw(write_with = write_string_map)]
+    pub metadata: BTreeMap<String, String>,
+}
+
+#[derive(Debug, BinRead, BinWrite)]
+pub struct MetadataIndex {
+    pub offset: u64,
+
+    pub length: u64,
+
+    #[br(map = |s: McapString| s.inner )]
+    #[bw(write_with = write_string)]
+    pub name: String,
+}
+
+#[derive(Debug, BinRead, BinWrite)]
+pub struct SummaryOffset {
+    pub group_opcode: u8,
+    pub group_start: u64,
+    pub group_length: u64,
 }
 
 #[derive(Debug, BinRead, BinWrite)]
