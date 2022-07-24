@@ -29,11 +29,12 @@ fn run() -> Result<()> {
     logsetup::init_logger(args.verbose, args.color);
 
     let mapped = map_mcap(&args.mcap)?;
+    let mut decompress_buf = Vec::new();
 
-    let mut records = mcap::LinearReader::new(&mapped)?;
+    let mut records = mcap::LinearReader::new(&mapped, &mut decompress_buf)?;
 
     while let Some(record) = records.next() {
-        println!("{:?}", record);
+        println!("kind: {:02x}, len: {}", record.kind, record.len);
     }
     Ok(())
 }

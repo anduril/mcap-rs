@@ -8,6 +8,8 @@ use thiserror::Error;
 pub enum McapError {
     #[error("Bad magic number")]
     BadMagic,
+    #[error("The CRC for the data section failed")]
+    BadDataCrc
 }
 
 pub type McapResult<T> = Result<T, McapError>;
@@ -15,14 +17,17 @@ pub type McapResult<T> = Result<T, McapError>;
 pub const MAGIC: &[u8] = &[0x89, b'M', b'C', b'A', b'P', 0x30, b'\r', b'\n'];
 
 #[derive(Debug)]
-pub struct Record {
-    kind: u8,
-    len: u64
+pub struct Record<'a> {
+    pub kind: u8,
+    pub len: u64,
+    pub contents: &'a [u8]
 }
 
 pub struct LinearReader<'a> {
     buf: &'a [u8],
-    current: Option<Record>,
+    current: Option<Record<'a>>,
+    // POOH: refcell?
+    scratch: Vec<u8>
 }
 
 impl<'a> LinearReader<'a> {
@@ -31,12 +36,23 @@ impl<'a> LinearReader<'a> {
             return Err(McapError::BadMagic);
         }
         let buf = &buf[MAGIC.len()..buf.len() - MAGIC.len()];
-        Ok(Self { buf, current: None })
+
+        {
+            let mut checker_buf = Vec::new();
+            let checker = LinearReader { buf, current: None, scratch: checker_buf };
+            checker.check_data_crc()?;
+        }
+
+        Ok(Self { buf, current: None, scratch: Vec::new() })
+    }
+
+    fn check_data_crc(self) -> McapResult<()> {
+        Ok(())
     }
 }
 
-impl StreamingIterator for LinearReader<'_> {
-    type Item = Record;
+impl<'a> StreamingIterator for LinearReader<'a> {
+    type Item = Record<'a>;
 
     fn advance(&mut self) {
         if self.buf.is_empty() {
@@ -58,7 +74,8 @@ impl StreamingIterator for LinearReader<'_> {
             self.current = None;
         } else {
             self.buf = &self.buf[len as usize..];
-            self.current = Some(Record { kind, len });
+            let contents = if len > 3 { self.buf } else { self.scratch.as_ref() };
+            self.current = Some(Record { kind, len, contents });
         }
     }
 
