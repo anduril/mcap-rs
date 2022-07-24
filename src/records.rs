@@ -96,8 +96,13 @@ fn parse_map<R: Read + Seek>(
     args: (),
 ) -> BinResult<BTreeMap<String, String>> {
     let mut parsed = BTreeMap::new();
-    let len: u32 = BinRead::read_options(reader, ro, args)?;
-    for _ in 0..len {
+
+    // Length of the map in BYTES, not records.
+    let byte_len: u32 = BinRead::read_options(reader, ro, args)?;
+    let pos = reader.stream_position()?;
+
+
+    while (reader.stream_position()? - pos) < byte_len as u64 {
         let pos = reader.stream_position()?;
         let k = McapString::read_options(reader, ro, args)?;
         let v = McapString::read_options(reader, ro, args)?;
@@ -118,11 +123,22 @@ fn write_map<W: Write + Seek>(
     opts: &WriteOptions,
     args: (),
 ) -> BinResult<()> {
-    (s.len() as u32).write_options(w, opts, args)?;
+    // Ugh: figure out total number of bytes to write:
+    let mut byte_len = 0;
+    for (k, v) in s {
+        byte_len += 8; // Four bytes each for lengths of key and value
+        byte_len += k.len();
+        byte_len += v.len();
+    }
+
+    (byte_len as u32).write_options(w, opts, args)?;
+    let pos = w.stream_position()?;
+
     for (k, v) in s {
         write_string(k, w, opts, args)?;
         write_string(v, w, opts, args)?;
     }
+    assert_eq!(w.stream_position()?, pos + byte_len as u64);
     Ok(())
 }
 
@@ -185,6 +201,11 @@ pub struct ChunkHeader {
     #[br(map = |s: McapString| s.inner )]
     #[bw(write_with = write_string)]
     compression: String,
+}
+
+#[derive(Debug, BinRead, BinWrite)]
+pub struct EndOfData {
+    pub data_section_crc: u32,
 }
 
 #[cfg(test)]

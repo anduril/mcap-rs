@@ -1,9 +1,10 @@
 mod records;
 
+use binrw::prelude::*;
 use log::*;
 use thiserror::Error;
 
-use std::borrow::Cow;
+use std::{borrow::Cow, io::Cursor};
 
 #[derive(Debug, Error)]
 pub enum McapError {
@@ -13,6 +14,10 @@ pub enum McapError {
     BadDataCrc,
     #[error("MCAP file ended in the middle of a record")]
     UnexpectedEof,
+    #[error("MCAP file contained no end-of-data record")]
+    NoEndOfData,
+    #[error("Record parse failed")]
+    Parse(#[from] binrw::Error),
 }
 
 pub type McapResult<T> = Result<T, McapError>;
@@ -20,14 +25,27 @@ pub type McapResult<T> = Result<T, McapError>;
 pub const MAGIC: &[u8] = &[0x89, b'M', b'C', b'A', b'P', 0x30, b'\r', b'\n'];
 
 #[derive(Debug)]
+pub enum RecordBody<'a> {
+    Header(records::Header),
+    Footer(records::Footer),
+    Schema(records::Schema),
+    Channel(records::Channel),
+    Message { header: records::MessageHeader, body: Cow<'a, [u8]> },
+    Chunk { header: records::ChunkHeader, body: &'a [u8] },
+    EndOfData(records::EndOfData),
+    Unknown(Cow<'a, [u8]>),
+}
+
+#[derive(Debug)]
 pub struct Record<'a> {
     pub kind: u8,
     pub len: u64,
-    pub contents: Cow<'a, [u8]>,
+    pub contents: RecordBody<'a>,
 }
 
 pub struct LinearReader<'a> {
     buf: &'a [u8],
+    malformed: bool,
 }
 
 impl<'a> LinearReader<'a> {
@@ -38,15 +56,36 @@ impl<'a> LinearReader<'a> {
         let buf = &buf[MAGIC.len()..buf.len() - MAGIC.len()];
 
         {
-            let checker = LinearReader { buf };
+            let checker = LinearReader {
+                buf,
+                malformed: false,
+            };
             checker.check_data_crc()?;
         }
 
-        Ok(Self { buf })
+        Ok(Self {
+            buf,
+            malformed: false,
+        })
     }
 
     fn check_data_crc(self) -> McapResult<()> {
-        Ok(())
+        for record in self {
+            if let Ok(Record {
+                contents: RecordBody::EndOfData(eod),
+                ..
+            }) = record
+            {
+                if eod.data_section_crc == 0 {
+                    debug!("File had no data section CRC");
+                    return Ok(());
+                } else {
+                    todo!("Get a [start, EOD] slice and CRC it");
+                }
+            }
+        }
+
+        Err(McapError::NoEndOfData)
     }
 }
 
@@ -58,8 +97,15 @@ impl<'a> Iterator for LinearReader<'a> {
             return None;
         }
 
+        // After an unrecoverable error (due to something wonky in the file),
+        // don't keep trying to walk it.
+        if self.malformed {
+            return None;
+        }
+
         if self.buf.len() < 5 {
-            warn!("Corrupt MCAP - not enough space for record + length!");
+            warn!("Malformed MCAP - not enough space for record + length!");
+            self.malformed = true;
             return Some(Err(McapError::UnexpectedEof));
         }
 
@@ -68,14 +114,39 @@ impl<'a> Iterator for LinearReader<'a> {
 
         if self.buf.len() < len as usize {
             warn!(
-                "Corrupt MCAP - record with length {len}, but only {} bytes remain",
+                "Malformed MCAP - record with length {len}, but only {} bytes remain",
                 self.buf.len()
             );
+            self.malformed = true;
             return Some(Err(McapError::UnexpectedEof));
         }
 
+        let body = &self.buf[..len as usize];
+
+        // Boilerplate for bouncing parse errors out of the match below.
+        macro_rules! record {
+            ($b:ident) => {
+                match Cursor::new($b).read_le() {
+                    Ok(k) => k,
+                    Err(e) => {
+                        self.malformed = true;
+                        return Some(Err(McapError::Parse(e)));
+                    }
+                }
+            }
+        }
+
+
+        let contents = match kind {
+            0x01 => RecordBody::Header(record!(body)),
+            0x02 => RecordBody::Footer(record!(body)),
+            0x03 => RecordBody::Schema(record!(body)),
+            0x04 => RecordBody::Channel(record!(body)),
+            0x0f => RecordBody::EndOfData(record!(body)),
+            _ => RecordBody::Unknown(Cow::Borrowed(body)),
+        };
+
         self.buf = &self.buf[len as usize..];
-        let contents = Cow::Borrowed(self.buf);
         Some(Ok(Record {
             kind,
             len,

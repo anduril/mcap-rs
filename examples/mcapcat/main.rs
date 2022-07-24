@@ -31,7 +31,12 @@ fn run() -> Result<()> {
 
     for record in mcap::LinearReader::new(&mapped)? {
         let record = record?;
-        println!("kind: {:02x}, len: {}", record.kind, record.len);
+        print!("kind: {:02x}, len: {}", record.kind, record.len);
+        if !matches!(record.contents, mcap::RecordBody::Unknown(_)) {
+            println!(", body: {:?}", record.contents);
+        } else {
+            println!();
+        }
     }
     Ok(())
 }
