@@ -1,3 +1,7 @@
+//! Raw records parsed from an MCAP file
+//!
+//! See <https://github.com/foxglove/mcap/tree/main/docs/specification>
+
 use binrw::io::{Read, Seek, Write};
 use binrw::*;
 

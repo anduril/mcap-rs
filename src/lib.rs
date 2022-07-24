@@ -1,4 +1,4 @@
-mod records;
+pub mod records;
 
 use binrw::prelude::*;
 use log::*;
@@ -22,10 +22,11 @@ pub enum McapError {
 
 pub type McapResult<T> = Result<T, McapError>;
 
+/// Magic bytes for the MCAP format
 pub const MAGIC: &[u8] = &[0x89, b'M', b'C', b'A', b'P', 0x30, b'\r', b'\n'];
 
 #[derive(Debug)]
-pub enum RecordBody<'a> {
+pub enum Record<'a> {
     Header(records::Header),
     Footer(records::Footer),
     Schema {
@@ -54,14 +55,11 @@ pub enum RecordBody<'a> {
     MetadataIndex(records::MetadataIndex),
     SummaryOffset(records::SummaryOffset),
     EndOfData(records::EndOfData),
-    Unknown(Cow<'a, [u8]>),
-}
-
-#[derive(Debug)]
-pub struct Record<'a> {
-    pub kind: u8,
-    pub len: u64,
-    pub contents: RecordBody<'a>,
+    /// A record of unknown type
+    Unknown {
+        opcode: u8,
+        data: Cow<'a, [u8]>,
+    },
 }
 
 pub struct LinearReader<'a> {
@@ -76,14 +74,6 @@ impl<'a> LinearReader<'a> {
         }
         let buf = &buf[MAGIC.len()..buf.len() - MAGIC.len()];
 
-        {
-            let checker = LinearReader {
-                buf,
-                malformed: false,
-            };
-            checker.check_data_crc()?;
-        }
-
         Ok(Self {
             buf,
             malformed: false,
@@ -92,11 +82,7 @@ impl<'a> LinearReader<'a> {
 
     fn check_data_crc(self) -> McapResult<()> {
         for record in self.flatten() {
-            if let Record {
-                contents: RecordBody::EndOfData(eod),
-                ..
-            } = record
-            {
+            if let Record::EndOfData(eod) = record {
                 if eod.data_section_crc == 0 {
                     debug!("File had no data section CRC");
                     return Ok(());
@@ -143,7 +129,7 @@ impl<'a> Iterator for LinearReader<'a> {
         }
 
         let body = &self.buf[..len as usize];
-        let contents = match read_record(kind, body) {
+        let record = match read_record(kind, body) {
             Ok(k) => k,
             Err(e) => {
                 self.malformed = true;
@@ -152,27 +138,23 @@ impl<'a> Iterator for LinearReader<'a> {
         };
 
         self.buf = &self.buf[len as usize..];
-        Some(Ok(Record {
-            kind,
-            len,
-            contents,
-        }))
+        Some(Ok(record))
     }
 }
 
-fn read_record(kind: u8, body: &[u8]) -> binrw::BinResult<RecordBody<'_>> {
+fn read_record(kind: u8, body: &[u8]) -> binrw::BinResult<Record<'_>> {
     macro_rules! record {
-        ($b:ident) => {
-            let cur = Cursor::new($b);
+        ($b:ident) => {{
+            let mut cur = Cursor::new($b);
             let res = cur.read_le()?;
-            assert_eq!(b.len(), cur.position());
+            assert_eq!($b.len() as u64, cur.position());
             res
-        };
+        }};
     }
 
     Ok(match kind {
-        0x01 => RecordBody::Header(record!(body)),
-        0x02 => RecordBody::Footer(record!(body)),
+        0x01 => Record::Header(record!(body)),
+        0x02 => Record::Footer(record!(body)),
         0x03 => {
             let mut c = Cursor::new(body);
             let header: records::SchemaHeader = c.read_le()?;
@@ -183,23 +165,23 @@ fn read_record(kind: u8, body: &[u8]) -> binrw::BinResult<RecordBody<'_>> {
                     header.name
                 );
             }
-            RecordBody::Schema { header, data }
+            Record::Schema { header, data }
         }
-        0x04 => RecordBody::Channel(record!(body)),
+        0x04 => Record::Channel(record!(body)),
         0x05 => {
             let mut c = Cursor::new(body);
             let header = c.read_le()?;
             let data = Cow::Borrowed(&body[c.position() as usize..]);
-            RecordBody::Message { header, data }
+            Record::Message { header, data }
         }
         0x06 => {
             let mut c = Cursor::new(body);
             let header = c.read_le()?;
             let data = &body[c.position() as usize..];
-            RecordBody::Chunk { header, data }
+            Record::Chunk { header, data }
         }
-        0x07 => RecordBody::MessageIndex(record!(body)),
-        0x08 => RecordBody::ChunkIndex(record!(body)),
+        0x07 => Record::MessageIndex(record!(body)),
+        0x08 => Record::ChunkIndex(record!(body)),
         0x09 => {
             let mut c = Cursor::new(body);
             let header: records::AttachmentHeader = c.read_le()?;
@@ -211,15 +193,18 @@ fn read_record(kind: u8, body: &[u8]) -> binrw::BinResult<RecordBody<'_>> {
                 );
             }
             let crc = Cursor::new(&body[body.len() - 4..]).read_le()?;
-            RecordBody::Attachment { header, data, crc }
+            Record::Attachment { header, data, crc }
         }
-        0x0a => RecordBody::AttachmentIndex(record!(body)),
-        0x0b => RecordBody::Statistics(record!(body)),
-        0x0c => RecordBody::Metadata(record!(body)),
-        0x0d => RecordBody::MetadataIndex(record!(body)),
-        0x0e => RecordBody::SummaryOffset(record!(body)),
-        0x0f => RecordBody::EndOfData(record!(body)),
-        _ => RecordBody::Unknown(Cow::Borrowed(body)),
+        0x0a => Record::AttachmentIndex(record!(body)),
+        0x0b => Record::Statistics(record!(body)),
+        0x0c => Record::Metadata(record!(body)),
+        0x0d => Record::MetadataIndex(record!(body)),
+        0x0e => Record::SummaryOffset(record!(body)),
+        0x0f => Record::EndOfData(record!(body)),
+        opcode => Record::Unknown {
+            opcode,
+            data: Cow::Borrowed(body),
+        },
     })
 }
 
