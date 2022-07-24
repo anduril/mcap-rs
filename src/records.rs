@@ -1,7 +1,10 @@
+use binrw::io::{Read, Seek, Write};
 use binrw::*;
-use binrw::io::{Read, Write, Seek};
 
-use std::{collections::BTreeMap, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{
+    collections::BTreeMap,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 #[binrw]
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
@@ -12,7 +15,7 @@ struct McapString {
 
     #[br(count = len, try_map = |s: Vec<u8>| String::from_utf8(s))]
     #[bw(map = |s| s.as_bytes())]
-    inner: String
+    inner: String,
 }
 
 /// Avoids taking a copy to turn a String to an McapString for serialization
@@ -20,7 +23,8 @@ fn write_string<W: binrw::io::Write + binrw::io::Seek>(
     s: &String,
     w: &mut W,
     opts: &WriteOptions,
-    args: ()) -> BinResult<()> {
+    args: (),
+) -> BinResult<()> {
     (s.len() as u32).write_options(w, opts, args)?;
     (s.as_bytes()).write_options(w, opts, args)?;
     Ok(())
@@ -34,7 +38,7 @@ struct McapVec {
     len: u32,
 
     #[br(count = len)]
-    inner: Vec<u8>
+    inner: Vec<u8>,
 }
 
 /// Avoids taking a copy to turn a Vec to an McapVec for serialization
@@ -42,7 +46,8 @@ fn write_vec<W: binrw::io::Write + binrw::io::Seek, T: binrw::BinWrite<Args = ()
     v: &Vec<T>,
     w: &mut W,
     opts: &WriteOptions,
-    args: ()) -> BinResult<()> {
+    args: (),
+) -> BinResult<()> {
     (v.len() as u32).write_options(w, opts, args)?;
     for e in v.iter() {
         e.write_options(w, opts, args)?;
@@ -82,12 +87,14 @@ pub struct Schema {
 
     #[br(map = |s: McapVec| s.inner )]
     #[bw(write_with = write_vec)]
-    data: Vec<u8>
+    data: Vec<u8>,
 }
 
-fn parse_map<R: Read + Seek>(reader: &mut R, ro: &ReadOptions, args: ())
-    -> BinResult<BTreeMap<String, String>> {
-
+fn parse_map<R: Read + Seek>(
+    reader: &mut R,
+    ro: &ReadOptions,
+    args: (),
+) -> BinResult<BTreeMap<String, String>> {
     let mut parsed = BTreeMap::new();
     let len: u32 = BinRead::read_options(reader, ro, args)?;
     for _ in 0..len {
@@ -95,7 +102,10 @@ fn parse_map<R: Read + Seek>(reader: &mut R, ro: &ReadOptions, args: ())
         let k = McapString::read_options(reader, ro, args)?;
         let v = McapString::read_options(reader, ro, args)?;
         if let Some(_prev) = parsed.insert(k.inner, v.inner) {
-            return Err(binrw::Error::Custom { pos, err: Box::new("Duplicate keys in map")});
+            return Err(binrw::Error::Custom {
+                pos,
+                err: Box::new("Duplicate keys in map"),
+            });
         }
     }
 
@@ -106,7 +116,8 @@ fn write_map<W: Write + Seek>(
     s: &BTreeMap<String, String>,
     w: &mut W,
     opts: &WriteOptions,
-    args: ()) -> BinResult<()> {
+    args: (),
+) -> BinResult<()> {
     (s.len() as u32).write_options(w, opts, args)?;
     for (k, v) in s {
         write_string(k, w, opts, args)?;
@@ -130,7 +141,7 @@ pub struct Channel {
 
     #[br(parse_with = parse_map)]
     #[bw(write_with = write_map)]
-    metadata: BTreeMap<String, String>
+    metadata: BTreeMap<String, String>,
 }
 
 fn time_to_nanos(d: &SystemTime) -> u64 {
@@ -142,8 +153,6 @@ fn time_to_nanos(d: &SystemTime) -> u64 {
 fn nanos_to_time(n: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_nanos(n)
 }
-
-
 
 #[derive(Debug, BinRead, BinWrite)]
 pub struct MessageHeader {
@@ -186,12 +195,23 @@ mod tests {
     #[test]
     fn string_parse() {
         let ms: McapString = Cursor::new(b"\x04\0\0\0abcd").read_le().unwrap();
-        assert_eq!(ms, McapString { inner: String::from("abcd") });
+        assert_eq!(
+            ms,
+            McapString {
+                inner: String::from("abcd")
+            }
+        );
 
-        assert!(Cursor::new(b"\x05\0\0\0abcd").read_le::<McapString>().is_err());
+        assert!(Cursor::new(b"\x05\0\0\0abcd")
+            .read_le::<McapString>()
+            .is_err());
 
         let mut written = Vec::new();
-        Cursor::new(&mut written).write_le(&McapString { inner: String::from("hullo") }).unwrap();
+        Cursor::new(&mut written)
+            .write_le(&McapString {
+                inner: String::from("hullo"),
+            })
+            .unwrap();
         assert_eq!(&written, b"\x05\0\0\0hullo");
     }
 

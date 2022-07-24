@@ -5,7 +5,6 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::Parser;
 use log::*;
 use memmap::Mmap;
-use streaming_iterator::StreamingIterator;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -16,7 +15,7 @@ struct Args {
     #[clap(short, long, arg_enum, default_value = "auto")]
     color: logsetup::Color,
 
-    mcap: Utf8PathBuf
+    mcap: Utf8PathBuf,
 }
 
 fn map_mcap(p: &Utf8Path) -> Result<Mmap> {
@@ -29,11 +28,9 @@ fn run() -> Result<()> {
     logsetup::init_logger(args.verbose, args.color);
 
     let mapped = map_mcap(&args.mcap)?;
-    let mut decompress_buf = Vec::new();
 
-    let mut records = mcap::LinearReader::new(&mapped, &mut decompress_buf)?;
-
-    while let Some(record) = records.next() {
+    for record in mcap::LinearReader::new(&mapped)? {
+        let record = record?;
         println!("kind: {:02x}, len: {}", record.kind, record.len);
     }
     Ok(())

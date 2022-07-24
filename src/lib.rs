@@ -1,15 +1,18 @@
 mod records;
 
-use streaming_iterator::StreamingIterator;
 use log::*;
 use thiserror::Error;
+
+use std::borrow::Cow;
 
 #[derive(Debug, Error)]
 pub enum McapError {
     #[error("Bad magic number")]
     BadMagic,
     #[error("The CRC for the data section failed")]
-    BadDataCrc
+    BadDataCrc,
+    #[error("MCAP file ended in the middle of a record")]
+    UnexpectedEof,
 }
 
 pub type McapResult<T> = Result<T, McapError>;
@@ -20,14 +23,11 @@ pub const MAGIC: &[u8] = &[0x89, b'M', b'C', b'A', b'P', 0x30, b'\r', b'\n'];
 pub struct Record<'a> {
     pub kind: u8,
     pub len: u64,
-    pub contents: &'a [u8]
+    pub contents: Cow<'a, [u8]>,
 }
 
 pub struct LinearReader<'a> {
     buf: &'a [u8],
-    current: Option<Record<'a>>,
-    // POOH: refcell?
-    scratch: Vec<u8>
 }
 
 impl<'a> LinearReader<'a> {
@@ -38,12 +38,11 @@ impl<'a> LinearReader<'a> {
         let buf = &buf[MAGIC.len()..buf.len() - MAGIC.len()];
 
         {
-            let mut checker_buf = Vec::new();
-            let checker = LinearReader { buf, current: None, scratch: checker_buf };
+            let checker = LinearReader { buf };
             checker.check_data_crc()?;
         }
 
-        Ok(Self { buf, current: None, scratch: Vec::new() })
+        Ok(Self { buf })
     }
 
     fn check_data_crc(self) -> McapResult<()> {
@@ -51,36 +50,37 @@ impl<'a> LinearReader<'a> {
     }
 }
 
-impl<'a> StreamingIterator for LinearReader<'a> {
-    type Item = Record<'a>;
+impl<'a> Iterator for LinearReader<'a> {
+    type Item = McapResult<Record<'a>>;
 
-    fn advance(&mut self) {
+    fn next(&mut self) -> Option<Self::Item> {
         if self.buf.is_empty() {
-            self.current = None;
-            return;
+            return None;
         }
 
         if self.buf.len() < 5 {
             warn!("Corrupt MCAP - not enough space for record + length!");
-            self.current = None;
-            return;
+            return Some(Err(McapError::UnexpectedEof));
         }
 
         let kind = read_u8(&mut self.buf);
         let len = read_u64(&mut self.buf);
 
         if self.buf.len() < len as usize {
-            warn!("Corrupt MCAP - record with length {len}, but only {} bytes remain", self.buf.len());
-            self.current = None;
-        } else {
-            self.buf = &self.buf[len as usize..];
-            let contents = if len > 3 { self.buf } else { self.scratch.as_ref() };
-            self.current = Some(Record { kind, len, contents });
+            warn!(
+                "Corrupt MCAP - record with length {len}, but only {} bytes remain",
+                self.buf.len()
+            );
+            return Some(Err(McapError::UnexpectedEof));
         }
-    }
 
-    fn get(&self) -> Option<&Self::Item> {
-        self.current.as_ref()
+        self.buf = &self.buf[len as usize..];
+        let contents = Cow::Borrowed(self.buf);
+        Some(Ok(Record {
+            kind,
+            len,
+            contents,
+        }))
     }
 }
 

@@ -9,7 +9,6 @@ edition = "2021"
 binrw = "0.9.2"
 log = "0.4"
 paste = "1.0.7"
-streaming-iterator = "0.1.6"
 thiserror = "1.0.31"
 
 [dev-dependencies]
