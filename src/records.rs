@@ -30,18 +30,25 @@ fn write_string<W: binrw::io::Write + binrw::io::Seek>(
     Ok(())
 }
 
-#[binrw]
-#[derive(Debug, Clone, Eq, PartialEq)]
-struct McapVec {
-    #[br(temp)]
-    #[bw(calc = inner.len() as u32)]
-    len: u32,
+fn parse_vec<T: binrw::BinRead<Args = ()>, R: Read + Seek>(
+    reader: &mut R,
+    ro: &ReadOptions,
+    args: (),
+) -> BinResult<Vec<T>> {
+    let mut parsed = Vec::new();
 
-    #[br(count = len)]
-    inner: Vec<u8>,
+    // Length of the map in BYTES, not records.
+    let byte_len: u32 = BinRead::read_options(reader, ro, args)?;
+    let pos = reader.stream_position()?;
+
+    while (reader.stream_position()? - pos) < byte_len as u64 {
+        parsed.push(T::read_options(reader, ro, args)?);
+    }
+
+    Ok(parsed)
 }
 
-/// Avoids taking a copy to turn a Vec to an McapVec for serialization
+
 fn write_vec<W: binrw::io::Write + binrw::io::Seek, T: binrw::BinWrite<Args = ()>>(
     v: &Vec<T>,
     w: &mut W,
@@ -85,7 +92,7 @@ pub struct Schema {
     #[bw(write_with = write_string)]
     encoding: String,
 
-    #[br(map = |s: McapVec| s.inner )]
+    #[br(parse_with = parse_vec)]
     #[bw(write_with = write_vec)]
     data: Vec<u8>,
 }
@@ -102,7 +109,6 @@ fn parse_map<R: Read + Seek>(
     let pos = reader.stream_position()?;
 
     while (reader.stream_position()? - pos) < byte_len as u64 {
-        let pos = reader.stream_position()?;
         let k = McapString::read_options(reader, ro, args)?;
         let v = McapString::read_options(reader, ro, args)?;
         if let Some(_prev) = parsed.insert(k.inner, v.inner) {
@@ -200,6 +206,24 @@ pub struct ChunkHeader {
     #[br(map = |s: McapString| s.inner )]
     #[bw(write_with = write_string)]
     compression: String,
+}
+
+#[derive(Debug, BinRead, BinWrite)]
+pub struct MessageIndexEntry {
+    #[br(map = nanos_to_time)]
+    #[bw(map = time_to_nanos)]
+    log_time: SystemTime,
+
+    offset: u64,
+}
+
+#[derive(Debug, BinRead, BinWrite)]
+pub struct MessageIndex {
+    channel_id: u16,
+
+    #[br(parse_with = parse_vec)]
+    #[bw(write_with = write_vec)]
+    records: Vec<MessageIndexEntry>
 }
 
 #[derive(Debug, BinRead, BinWrite)]

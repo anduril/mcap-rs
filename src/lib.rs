@@ -38,6 +38,7 @@ pub enum RecordBody<'a> {
         header: records::ChunkHeader,
         data: &'a [u8],
     },
+    MessageIndex(records::MessageIndex),
     EndOfData(records::EndOfData),
     Unknown(Cow<'a, [u8]>),
 }
@@ -93,6 +94,7 @@ impl<'a> LinearReader<'a> {
 
         Err(McapError::NoEndOfData)
     }
+
 }
 
 impl<'a> Iterator for LinearReader<'a> {
@@ -128,44 +130,12 @@ impl<'a> Iterator for LinearReader<'a> {
         }
 
         let body = &self.buf[..len as usize];
-
-        // Boilerplate for bouncing parse errors out of the match below.
-        macro_rules! check_parse {
-            ($r:expr) => {
-                match $r {
-                    Ok(k) => k,
-                    Err(e) => {
-                        self.malformed = true;
-                        return Some(Err(McapError::Parse(e)));
-                    }
-                }
-            };
-        }
-        macro_rules! record {
-            ($b:ident) => {
-                check_parse!(Cursor::new($b).read_le())
-            };
-        }
-
-        let contents = match kind {
-            0x01 => RecordBody::Header(record!(body)),
-            0x02 => RecordBody::Footer(record!(body)),
-            0x03 => RecordBody::Schema(record!(body)),
-            0x04 => RecordBody::Channel(record!(body)),
-            0x05 => {
-                let mut c = Cursor::new(body);
-                let header = check_parse!(c.read_le());
-                let data = Cow::Borrowed(&body[c.position() as usize..]);
-                RecordBody::Message { header, data }
+        let contents = match read_record(kind, body) {
+            Ok(k) => k,
+            Err(e) => {
+                self.malformed = true;
+                return Some(Err(McapError::Parse(e)));
             }
-            0x06 => {
-                let mut c = Cursor::new(body);
-                let header = check_parse!(c.read_le());
-                let data = &body[c.position() as usize..];
-                RecordBody::Chunk { header, data }
-            }
-            0x0f => RecordBody::EndOfData(record!(body)),
-            _ => RecordBody::Unknown(Cow::Borrowed(body)),
         };
 
         self.buf = &self.buf[len as usize..];
@@ -175,6 +145,36 @@ impl<'a> Iterator for LinearReader<'a> {
             contents,
         }))
     }
+}
+
+fn read_record(kind: u8, body: &[u8]) -> binrw::BinResult<RecordBody<'_>> {
+    macro_rules! record {
+        ($b:ident) => {
+           Cursor::new($b).read_le()?
+        };
+    }
+
+    Ok(match kind {
+        0x01 => RecordBody::Header(record!(body)),
+        0x02 => RecordBody::Footer(record!(body)),
+        0x03 => RecordBody::Schema(record!(body)),
+        0x04 => RecordBody::Channel(record!(body)),
+        0x05 => {
+            let mut c = Cursor::new(body);
+            let header = c.read_le()?;
+            let data = Cow::Borrowed(&body[c.position() as usize..]);
+            RecordBody::Message { header, data }
+        }
+        0x06 => {
+            let mut c = Cursor::new(body);
+            let header = c.read_le()?;
+            let data = &body[c.position() as usize..];
+            RecordBody::Chunk { header, data }
+        }
+        0x07 => RecordBody::MessageIndex(record!(body)),
+        0x0f => RecordBody::EndOfData(record!(body)),
+        _ => RecordBody::Unknown(Cow::Borrowed(body)),
+    })
 }
 
 // All of the following panic if they walk off the back of the data block;
