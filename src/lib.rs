@@ -4,7 +4,7 @@ use binrw::prelude::*;
 use log::*;
 use thiserror::Error;
 
-use std::{borrow::Cow, io::Cursor};
+use std::{borrow::Cow, io::{BufReader, Cursor}};
 
 #[derive(Debug, Error)]
 pub enum McapError {
@@ -18,6 +18,8 @@ pub enum McapError {
     Parse(#[from] binrw::Error),
     #[error("MCAP file ended in the middle of a record")]
     UnexpectedEof,
+    #[error("Unsupported compression format `{0}`")]
+    UnsupportedCompression(String)
 }
 
 pub type McapResult<T> = Result<T, McapError>;
@@ -62,6 +64,11 @@ pub enum Record<'a> {
     },
 }
 
+/// Scans a mapped MCAP file from start to end, returning each record.
+///
+/// You probably want a MessageReader instead - this yields the raw records
+/// from the file without any postprocessing (CRC checks, decompressing chunks, etc.)
+/// and is mostly meant as a building block for higher-level readers.
 pub struct LinearReader<'a> {
     buf: &'a [u8],
     malformed: bool,
@@ -110,36 +117,40 @@ impl<'a> Iterator for LinearReader<'a> {
             return None;
         }
 
-        if self.buf.len() < 5 {
-            warn!("Malformed MCAP - not enough space for record + length!");
-            self.malformed = true;
-            return Some(Err(McapError::UnexpectedEof));
-        }
-
-        let kind = read_u8(&mut self.buf);
-        let len = read_u64(&mut self.buf);
-
-        if self.buf.len() < len as usize {
-            warn!(
-                "Malformed MCAP - record with length {len}, but only {} bytes remain",
-                self.buf.len()
-            );
-            self.malformed = true;
-            return Some(Err(McapError::UnexpectedEof));
-        }
-
-        let body = &self.buf[..len as usize];
-        let record = match read_record(kind, body) {
+        let record = match read_record_from_slice(&mut self.buf) {
             Ok(k) => k,
             Err(e) => {
                 self.malformed = true;
-                return Some(Err(McapError::Parse(e)));
+                return Some(Err(e));
             }
         };
 
-        self.buf = &self.buf[len as usize..];
         Some(Ok(record))
     }
+}
+
+fn read_record_from_slice<'a>(buf: &mut &'a[u8]) -> McapResult<Record<'a>> {
+    if buf.len() < 5 {
+        warn!("Malformed MCAP - not enough space for record + length!");
+        return Err(McapError::UnexpectedEof);
+    }
+
+    let kind = read_u8(buf);
+    let len = read_u64(buf);
+
+    if buf.len() < len as usize {
+        warn!(
+            "Malformed MCAP - record with length {len}, but only {} bytes remain",
+            buf.len()
+        );
+        return Err(McapError::UnexpectedEof);
+    }
+
+    let body = &buf[..len as usize];
+    let record = read_record(kind, body).map_err(|e| McapError::Parse(e))?;
+
+    *buf = &buf[len as usize..];
+    Ok(record)
 }
 
 fn read_record(kind: u8, body: &[u8]) -> binrw::BinResult<Record<'_>> {
@@ -206,6 +217,44 @@ fn read_record(kind: u8, body: &[u8]) -> binrw::BinResult<Record<'_>> {
             data: Cow::Borrowed(body),
         },
     })
+}
+
+enum ChunkDecompressor<'a> {
+    Null(LinearReader<'a>),
+    Zstd(zstd::stream::read::Decoder<'a, BufReader<&'a [u8]>>),
+    Lz4
+}
+
+struct ChunkReader<'a> {
+    header: records::ChunkHeader,
+    decompressor: ChunkDecompressor<'a>,
+}
+
+impl<'a> ChunkReader<'a> {
+    fn new(header: records::ChunkHeader, data: &'a [u8]) -> McapResult<Self> {
+        let decompressor = match header.compression.as_str() {
+            "zstd" => ChunkDecompressor::Zstd(zstd::stream::read::Decoder::new(data).unwrap()),
+            "lz4" => ChunkDecompressor::Lz4,
+            "" => ChunkDecompressor::Null(LinearReader { buf: data, malformed: false }),
+            wat => return Err(McapError::UnsupportedCompression(wat.to_string())),
+        };
+
+        Ok(Self { header, decompressor })
+    }
+}
+
+impl<'a> Iterator for ChunkReader<'a> {
+    type Item = McapResult<Record<'a>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match &mut self.decompressor {
+            ChunkDecompressor::Null(r) => r.next(),
+            ChunkDecompressor::Zstd(z) => {
+                None
+            }
+            ChunkDecompressor::Lz4 => todo!()
+        }
+    }
 }
 
 // All of the following panic if they walk off the back of the data block;
