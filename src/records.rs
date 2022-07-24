@@ -101,7 +101,6 @@ fn parse_map<R: Read + Seek>(
     let byte_len: u32 = BinRead::read_options(reader, ro, args)?;
     let pos = reader.stream_position()?;
 
-
     while (reader.stream_position()? - pos) < byte_len as u64 {
         let pos = reader.stream_position()?;
         let k = McapString::read_options(reader, ro, args)?;

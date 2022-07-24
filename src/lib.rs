@@ -30,8 +30,14 @@ pub enum RecordBody<'a> {
     Footer(records::Footer),
     Schema(records::Schema),
     Channel(records::Channel),
-    Message { header: records::MessageHeader, body: Cow<'a, [u8]> },
-    Chunk { header: records::ChunkHeader, body: &'a [u8] },
+    Message {
+        header: records::MessageHeader,
+        data: Cow<'a, [u8]>,
+    },
+    Chunk {
+        header: records::ChunkHeader,
+        data: &'a [u8],
+    },
     EndOfData(records::EndOfData),
     Unknown(Cow<'a, [u8]>),
 }
@@ -124,24 +130,40 @@ impl<'a> Iterator for LinearReader<'a> {
         let body = &self.buf[..len as usize];
 
         // Boilerplate for bouncing parse errors out of the match below.
-        macro_rules! record {
-            ($b:ident) => {
-                match Cursor::new($b).read_le() {
+        macro_rules! check_parse {
+            ($r:expr) => {
+                match $r {
                     Ok(k) => k,
                     Err(e) => {
                         self.malformed = true;
                         return Some(Err(McapError::Parse(e)));
                     }
                 }
-            }
+            };
         }
-
+        macro_rules! record {
+            ($b:ident) => {
+                check_parse!(Cursor::new($b).read_le())
+            };
+        }
 
         let contents = match kind {
             0x01 => RecordBody::Header(record!(body)),
             0x02 => RecordBody::Footer(record!(body)),
             0x03 => RecordBody::Schema(record!(body)),
             0x04 => RecordBody::Channel(record!(body)),
+            0x05 => {
+                let mut c = Cursor::new(body);
+                let header = check_parse!(c.read_le());
+                let data = Cow::Borrowed(&body[c.position() as usize..]);
+                RecordBody::Message { header, data }
+            }
+            0x06 => {
+                let mut c = Cursor::new(body);
+                let header = check_parse!(c.read_le());
+                let data = &body[c.position() as usize..];
+                RecordBody::Chunk { header, data }
+            }
             0x0f => RecordBody::EndOfData(record!(body)),
             _ => RecordBody::Unknown(Cow::Borrowed(body)),
         };
