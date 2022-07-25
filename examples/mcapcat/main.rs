@@ -31,11 +31,12 @@ fn run() -> Result<()> {
 
     for record in mcap::LinearReader::new(&mapped)? {
         let record = record?;
-        print!("kind: {:02x}, len: {}", record.kind, record.len);
-        if !matches!(record.contents, mcap::RecordBody::Unknown(_)) {
-            println!(", body: {:?}", record.contents);
-        } else {
-            println!();
+        println!("{:?}", record);
+        if let mcap::Record::Chunk { header, data } = record {
+            for chunk_record in mcap::ChunkReader::new(header, data)? {
+                let chunk_record = chunk_record?;
+                println!("\t{:?}", chunk_record);
+            }
         }
     }
     Ok(())

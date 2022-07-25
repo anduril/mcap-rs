@@ -259,6 +259,8 @@ pub struct ChunkHeader {
     #[br(map = |s: McapString| s.inner )]
     #[bw(write_with = write_string)]
     pub compression: String,
+
+    pub compressed_size: u64,
 }
 
 #[derive(Debug, BinRead, BinWrite)]
