@@ -16,6 +16,8 @@ use read_utils::CountingHasher;
 pub enum McapError {
     #[error("Bad magic number")]
     BadMagic,
+    #[error("A chunk CRC failed")]
+    BadChunkCrc,
     #[error("The CRC for the data section failed")]
     BadDataCrc,
     #[error("MCAP file contained no end-of-data record")]
@@ -241,7 +243,7 @@ fn read_record(op: u8, body: &[u8]) -> binrw::BinResult<Record<'_>> {
 enum ChunkDecompressor<'a> {
     Null(LinearReader<'a>),
     Compressed {
-        stream: CountingHasher<Box<dyn Read + 'a>>,
+        stream: Option<CountingHasher<Box<dyn Read + 'a>>>,
         malformed: bool,
     },
 }
@@ -255,9 +257,9 @@ impl<'a> ChunkReader<'a> {
     pub fn new(header: records::ChunkHeader, data: &'a [u8]) -> McapResult<Self> {
         let decompressor = match header.compression.as_str() {
             "zstd" => ChunkDecompressor::Compressed {
-                stream: CountingHasher::new(Box::new(
+                stream: Some(CountingHasher::new(Box::new(
                     zstd::stream::read::Decoder::new(data).unwrap(),
-                )),
+                ))),
                 malformed: false,
             },
             "lz4" => todo!(),
@@ -281,14 +283,35 @@ impl<'a> Iterator for ChunkReader<'a> {
         match &mut self.decompressor {
             ChunkDecompressor::Null(r) => r.next(),
             ChunkDecompressor::Compressed { stream, malformed } => {
+                // If we previously encountered an error in this stream, give up.
                 if *malformed {
                     return None;
                 }
 
-                if stream.position() >= self.header.uncompressed_size {
+                // If we consumed the stream last time to get the CRC, we're done.
+                if stream.is_none() {
                     return None;
                 }
-                let record = match read_record_from_chunk_stream(stream) {
+
+                let s = stream.as_mut().unwrap();
+
+                // If we've read all there is to read...
+                if s.position() == self.header.uncompressed_size {
+                    // Get the CRC.
+                    let calculated_crc = stream.take().unwrap().finalize();
+
+                    // If the header stored a CRC...
+                    if self.header.uncompressed_crc != 0 {
+                        // And it doesn't match what we have, complain.
+                        if self.header.uncompressed_crc != calculated_crc {
+                            return Some(Err(McapError::BadChunkCrc));
+                        }
+                    }
+                    // All good!
+                    return None;
+                }
+
+                let record = match read_record_from_chunk_stream(s) {
                     Ok(k) => k,
                     Err(e) => {
                         *malformed = true;
