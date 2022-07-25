@@ -2,6 +2,7 @@ use std::io::{self, prelude::*};
 
 use crc32fast::Hasher;
 
+/// Counts how many bytes have been read and calculates a running CRC32
 pub struct CountingHasher<R> {
     inner: R,
     hasher: Hasher,
@@ -21,6 +22,7 @@ impl<R: Read> CountingHasher<R> {
         self.count
     }
 
+    /// Consumes the reader and returns the checksum
     pub fn finalize(self) -> u32 {
         self.hasher.finalize()
     }

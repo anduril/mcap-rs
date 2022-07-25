@@ -6,9 +6,52 @@ use binrw::io::{Read, Seek, Write};
 use binrw::*;
 
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+/// A raw record from an MCAP file.
+///
+/// For records with large slices of binary data (schemas, messages, chunks...),
+/// we use a CoW that can either borrow directly from the mapped file,
+/// or hold its own buffer if it was decompressed from a chunk.
+#[derive(Debug)]
+pub enum Record<'a> {
+    Header(Header),
+    Footer(Footer),
+    Schema {
+        header: SchemaHeader,
+        data: Cow<'a, [u8]>,
+    },
+    Channel(Channel),
+    Message {
+        header: MessageHeader,
+        data: Cow<'a, [u8]>,
+    },
+    Chunk {
+        header: ChunkHeader,
+        data: &'a [u8],
+    },
+    MessageIndex(MessageIndex),
+    ChunkIndex(ChunkIndex),
+    Attachment {
+        header: AttachmentHeader,
+        data: &'a [u8],
+        crc: u32,
+    },
+    AttachmentIndex(AttachmentIndex),
+    Statistics(Statistics),
+    Metadata(Metadata),
+    MetadataIndex(MetadataIndex),
+    SummaryOffset(SummaryOffset),
+    EndOfData(EndOfData),
+    /// A record of unknown type
+    Unknown {
+        opcode: u8,
+        data: Cow<'a, [u8]>,
+    },
+}
 
 #[binrw]
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]

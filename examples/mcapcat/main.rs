@@ -30,20 +30,20 @@ fn run() -> Result<()> {
     let mapped = map_mcap(&args.mcap)?;
 
     /*
-    for record in mcap::LinearReader::new(&mapped)? {
-        if let mcap::Record::Chunk { header, data } = record? {
-            for dechunked in mcap::ChunkReader::new(header, data)? {
-                if let mcap::Record::Message { header: mh, .. } = dechunked? {
-                    println!("{:?}", mh);
-                }
+    for record in mcap::read::LinearReader::new(&mapped)? {
+        let record = record?;
+        println!("{:?}", record);
+        if let mcap::records::Record::Chunk { header, data } = record {
+            for dechunked in mcap::read::ChunkReader::new(header, data)? {
+                println!("\t{:?}", dechunked?);
             }
         }
     }
     */
     /*
-    for record in mcap::ChunkFlattener::new(&mapped)? {
+    for record in mcap::read::ChunkFlattener::new(&mapped)? {
         let record = record?;
-        if let mcap::Record::Message { header, .. } = record {
+        if let mcap::records::Record::Message { header, .. } = record {
             println!("{:?}", header);
         }
     }
