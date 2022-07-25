@@ -29,15 +29,33 @@ fn run() -> Result<()> {
 
     let mapped = map_mcap(&args.mcap)?;
 
-    for record in mcap::LinearReader::new(&mapped)? {
-        let record = record?;
-        println!("{:?}", record);
-        if let mcap::Record::Chunk { header, data } = record {
-            for chunk_record in mcap::ChunkReader::new(header, data)? {
-                let chunk_record = chunk_record?;
-                println!("\t{:?}", chunk_record);
-            }
-        }
+    // for record in mcap::LinearReader::new(&mapped)? {
+    // for record in mcap::ChunkFlattener::new(&mapped)? {
+    for message in mcap::MessageStream::new(&mapped)? {
+        let message = message?;
+        let ts = message
+            .publish_time
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        println!(
+            "{} {} [{}] [{}]...",
+            ts,
+            message.channel.topic,
+            message
+                .channel
+                .schema
+                .as_ref()
+                .map(|s| s.name.as_str())
+                .unwrap_or_default(),
+            message
+                .data
+                .iter()
+                .take(10)
+                .map(|b| b.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
     }
     Ok(())
 }

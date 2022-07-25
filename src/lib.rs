@@ -3,10 +3,14 @@ pub mod records;
 
 use std::{
     borrow::Cow,
+    collections::{BTreeMap, HashMap},
     io::{prelude::*, Cursor},
+    sync::Arc,
+    time::SystemTime,
 };
 
 use binrw::prelude::*;
+use crc32fast::hash as crc32;
 use log::*;
 use thiserror::Error;
 
@@ -20,16 +24,24 @@ pub enum McapError {
     BadChunkCrc,
     #[error("The CRC for the data section failed")]
     BadDataCrc,
-    #[error("MCAP file contained no end-of-data record")]
-    NoEndOfData,
+    #[error("Channel `{0}` has mulitple records that don't match.")]
+    ConflictingChannels(String),
+    #[error("Schema `{0}` has mulitple records that don't match.")]
+    ConflictingSchemas(String),
     #[error("Record parse failed")]
     Parse(#[from] binrw::Error),
     #[error("I/O error in compression stream")]
     Compression(#[from] std::io::Error),
+    #[error("A schema has an ID of 0")]
+    InvalidSchemaId,
     #[error("MCAP file ended in the middle of a record")]
     UnexpectedEof,
     #[error("Chunk ended in the middle of a record")]
     UnexpectedEoc,
+    #[error("Message {0} referenced unknown channel {1}")]
+    UnknownChannel(u32, u16),
+    #[error("Channel `{0}` referenced unknown schema {1}")]
+    UnknownSchema(String, u16),
     #[error("Found record with opcode {0:02X} in a chunk")]
     UnexpectedChunkRecord(u8),
     #[error("Unsupported compression format `{0}`")]
@@ -80,7 +92,7 @@ pub enum Record<'a> {
 
 /// Scans a mapped MCAP file from start to end, returning each record.
 ///
-/// You probably want a MessageReader instead - this yields the raw records
+/// You probably want a MessageStream instead - this yields the raw records
 /// from the file without any postprocessing (CRC checks, decompressing chunks, etc.)
 /// and is mostly meant as a building block for higher-level readers.
 pub struct LinearReader<'a> {
@@ -97,7 +109,6 @@ impl<'a> LinearReader<'a> {
         Ok(Self::sans_magic(buf))
     }
 
-    #[inline]
     fn sans_magic(buf: &'a [u8]) -> Self {
         Self {
             buf,
@@ -105,19 +116,8 @@ impl<'a> LinearReader<'a> {
         }
     }
 
-    fn check_data_crc(self) -> McapResult<()> {
-        for record in self.flatten() {
-            if let Record::EndOfData(eod) = record {
-                if eod.data_section_crc == 0 {
-                    debug!("File had no data section CRC");
-                    return Ok(());
-                } else {
-                    todo!("Get a [start, EOD] slice and CRC it");
-                }
-            }
-        }
-
-        Err(McapError::NoEndOfData)
+    fn bytes_remaining(&self) -> usize {
+        self.buf.len()
     }
 }
 
@@ -248,6 +248,7 @@ enum ChunkDecompressor<'a> {
     },
 }
 
+/// Streams records out of a chunk
 pub struct ChunkReader<'a> {
     header: records::ChunkHeader,
     decompressor: ChunkDecompressor<'a>,
@@ -273,8 +274,7 @@ impl<'a> ChunkReader<'a> {
                     );
                 }
 
-                if header.uncompressed_crc != 0 && header.uncompressed_crc != crc32fast::hash(data)
-                {
+                if header.uncompressed_crc != 0 && header.uncompressed_crc != crc32(data) {
                     return Err(McapError::BadChunkCrc);
                 }
 
@@ -318,7 +318,7 @@ impl<'a> Iterator for ChunkReader<'a> {
                 };
 
                 // If we've read all there is to read...
-                if s.position() == self.header.uncompressed_size {
+                if s.position() >= self.header.uncompressed_size {
                     // Get the CRC.
                     let calculated_crc = stream.take().unwrap().finalize();
 
@@ -417,6 +417,241 @@ fn read_record_from_chunk_stream<'a, R: Read>(r: &mut R) -> McapResult<Record<'a
         }
         wut => return Err(McapError::UnexpectedChunkRecord(wut)),
     })
+}
+
+/// Flattens chunks into the top-level record stream
+pub struct ChunkFlattener<'a> {
+    top_level: LinearReader<'a>,
+    dechunk: Option<ChunkReader<'a>>,
+    malformed: bool,
+}
+
+impl<'a> ChunkFlattener<'a> {
+    pub fn new(buf: &'a [u8]) -> McapResult<Self> {
+        let top_level = LinearReader::new(buf)?;
+        Ok(Self {
+            top_level,
+            dechunk: None,
+            malformed: false,
+        })
+    }
+
+    fn bytes_remaining(&self) -> usize {
+        self.top_level.bytes_remaining()
+    }
+}
+
+impl<'a> Iterator for ChunkFlattener<'a> {
+    type Item = McapResult<Record<'a>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.malformed {
+            return None;
+        }
+
+        let n: Option<Self::Item> = loop {
+            // If we're reading from a chunk, do that until it returns None.
+            if let Some(d) = &mut self.dechunk {
+                match d.next() {
+                    Some(d) => break Some(d),
+                    None => self.dechunk = None,
+                }
+            }
+            // Fall through - if we didn't extract a record from a chunk
+            // (or that chunk ended), move on to the next top-level record.
+            match self.top_level.next() {
+                Some(Ok(Record::Chunk { header, data })) => {
+                    self.dechunk = match ChunkReader::new(header, data) {
+                        Ok(d) => Some(d),
+                        Err(e) => break Some(Err(e)),
+                    };
+                    // Continue the loop to get the first item from the chunk.
+                }
+                not_a_chunk => break not_a_chunk,
+            }
+        };
+
+        // Give up on errors
+        if matches!(n, Some(Err(_))) {
+            self.malformed = true;
+        }
+        n
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Schema<'a> {
+    pub name: String,
+    pub encoding: String,
+    pub data: Cow<'a, [u8]>,
+}
+
+#[derive(Debug)]
+pub struct Channel<'a> {
+    pub topic: String,
+    pub schema: Option<Arc<Schema<'a>>>,
+
+    pub message_encoding: String,
+    pub metadata: BTreeMap<String, String>,
+}
+
+#[derive(Debug)]
+pub struct Message<'a> {
+    pub channel: Arc<Channel<'a>>,
+    pub sequence: u32,
+    pub log_time: SystemTime,
+    pub publish_time: SystemTime,
+    pub data: Cow<'a, [u8]>,
+}
+
+pub struct MessageStream<'a> {
+    full_file: &'a [u8],
+    records: ChunkFlattener<'a>,
+    done: bool,
+
+    schemas: HashMap<u16, Arc<Schema<'a>>>,
+    channels: HashMap<u16, Arc<Channel<'a>>>,
+}
+
+impl<'a> MessageStream<'a> {
+    pub fn new(buf: &'a [u8]) -> McapResult<Self> {
+        let full_file = buf;
+        let records = ChunkFlattener::new(buf)?;
+
+        Ok(Self {
+            full_file,
+            records,
+            done: false,
+            schemas: HashMap::new(),
+            channels: HashMap::new(),
+        })
+    }
+}
+
+impl<'a> Iterator for MessageStream<'a> {
+    type Item = McapResult<Message<'a>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+
+        let n = loop {
+            // Let's start with a working record.
+            let record = match self.records.next() {
+                Some(Ok(rec)) => rec,
+                Some(Err(e)) => break Some(Err(e)),
+                None => break None,
+            };
+
+            match record {
+                // Insert schemas into our iterator so we know when subsequent
+                // channels reference them.
+                Record::Schema { header, data } => {
+                    if header.id == 0 {
+                        break Some(Err(McapError::InvalidSchemaId));
+                    }
+
+                    if let Some(preexisting) = self.schemas.get(&header.id) {
+                        // Oh boy, we have this schema already.
+                        // It had better be identital.
+                        if header.name != preexisting.name
+                            || header.encoding != preexisting.encoding
+                            || data != preexisting.data
+                        {
+                            break Some(Err(McapError::ConflictingSchemas(header.name)));
+                        }
+                    } else {
+                        let schema = Arc::new(Schema {
+                            name: header.name,
+                            encoding: header.encoding,
+                            data,
+                        });
+                        assert!(self.schemas.insert(header.id, schema).is_none());
+                    }
+                }
+
+                // Insert channels into our iterator so we know when subsequent
+                // messages reference them.
+                Record::Channel(chan) => {
+                    if let Some(preexisting) = self.channels.get(&chan.id) {
+                        if chan.topic != preexisting.topic
+                            || chan.message_encoding != preexisting.message_encoding
+                            || chan.metadata != preexisting.metadata
+                            || self.schemas.get(&chan.schema_id) != preexisting.schema.as_ref()
+                        {
+                            break Some(Err(McapError::ConflictingChannels(chan.topic)));
+                        }
+                    } else {
+                        let schema = if chan.schema_id == 0 {
+                            None
+                        } else {
+                            match self.schemas.get(&chan.schema_id) {
+                                Some(s) => Some(s.clone()),
+                                None => {
+                                    break Some(Err(McapError::UnknownSchema(
+                                        chan.topic,
+                                        chan.schema_id,
+                                    )))
+                                }
+                            }
+                        };
+
+                        let channel = Arc::new(Channel {
+                            topic: chan.topic,
+                            schema,
+                            message_encoding: chan.message_encoding,
+                            metadata: chan.metadata,
+                        });
+                        assert!(self.channels.insert(chan.id, channel).is_none());
+                    }
+                }
+
+                Record::Message { header, data } => {
+                    let channel = match self.channels.get(&header.channel_id) {
+                        Some(c) => c.clone(),
+                        None => {
+                            break Some(Err(McapError::UnknownChannel(
+                                header.sequence,
+                                header.channel_id,
+                            )))
+                        }
+                    };
+
+                    let m = Message {
+                        channel,
+                        sequence: header.sequence,
+                        log_time: header.log_time,
+                        publish_time: header.publish_time,
+                        data,
+                    };
+                    break Some(Ok(m));
+                }
+
+                // If it's EOD, do unholy things to calculate the CRC.
+                Record::EndOfData(end) => {
+                    if end.data_section_crc != 0 {
+                        // This is terrible. Less math with less magic numbers, please.
+                        let data_section_len = (self.full_file.len() - MAGIC.len() * 2) // Actual working area
+                            - self.records.bytes_remaining();
+
+                        let data_section =
+                            &self.full_file[MAGIC.len()..MAGIC.len() + data_section_len];
+                        if end.data_section_crc != crc32(data_section) {
+                            break Some(Err(McapError::BadDataCrc));
+                        }
+                    }
+                    break None; // We're done at any rate.
+                }
+                _skip => {}
+            };
+        };
+
+        if !matches!(n, Some(Ok(_))) {
+            self.done = true;
+        }
+        n
+    }
 }
 
 // All of the following panic if they walk off the back of the data block;
