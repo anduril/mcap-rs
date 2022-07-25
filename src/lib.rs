@@ -258,16 +258,30 @@ impl<'a> ChunkReader<'a> {
         let decompressor = match header.compression.as_str() {
             "zstd" => ChunkDecompressor::Compressed {
                 stream: Some(CountingHasher::new(Box::new(
-                    zstd::stream::read::Decoder::new(data).unwrap(),
+                    zstd::stream::read::Decoder::new(data)?,
                 ))),
                 malformed: false,
             },
-            "lz4" => todo!(),
-            "" => ChunkDecompressor::Null(LinearReader::sans_magic(data)),
+            "lz4" => ChunkDecompressor::Compressed {
+                stream: Some(CountingHasher::new(Box::new(lz4::Decoder::new(data)?))),
+                malformed: false,
+            },
+            "" => {
+                if header.uncompressed_size != header.compressed_size {
+                    warn!(
+                        "Chunk is uncompressed, but claims different compress/uncompressed lengths"
+                    );
+                }
+
+                if header.uncompressed_crc != 0 && header.uncompressed_crc != crc32fast::hash(data)
+                {
+                    return Err(McapError::BadChunkCrc);
+                }
+
+                ChunkDecompressor::Null(LinearReader::sans_magic(data))
+            }
             wat => return Err(McapError::UnsupportedCompression(wat.to_string())),
         };
-
-        // TODO: If null compressor, check length and CRC NOW!
 
         Ok(Self {
             header,
@@ -295,22 +309,6 @@ impl<'a> Iterator for ChunkReader<'a> {
 
                 let s = stream.as_mut().unwrap();
 
-                // If we've read all there is to read...
-                if s.position() == self.header.uncompressed_size {
-                    // Get the CRC.
-                    let calculated_crc = stream.take().unwrap().finalize();
-
-                    // If the header stored a CRC...
-                    if self.header.uncompressed_crc != 0 {
-                        // And it doesn't match what we have, complain.
-                        if self.header.uncompressed_crc != calculated_crc {
-                            return Some(Err(McapError::BadChunkCrc));
-                        }
-                    }
-                    // All good!
-                    return None;
-                }
-
                 let record = match read_record_from_chunk_stream(s) {
                     Ok(k) => k,
                     Err(e) => {
@@ -318,6 +316,22 @@ impl<'a> Iterator for ChunkReader<'a> {
                         return Some(Err(e));
                     }
                 };
+
+                // If we've read all there is to read...
+                if s.position() == self.header.uncompressed_size {
+                    // Get the CRC.
+                    let calculated_crc = stream.take().unwrap().finalize();
+
+                    // If the header stored a CRC
+                    // and it doesn't match what we have, complain.
+                    if self.header.uncompressed_crc != 0
+                        && self.header.uncompressed_crc != calculated_crc
+                    {
+                        return Some(Err(McapError::BadChunkCrc));
+                    }
+                    // All good!
+                    return None;
+                }
 
                 Some(Ok(record))
             }

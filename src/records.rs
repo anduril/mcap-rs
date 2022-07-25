@@ -230,7 +230,7 @@ fn nanos_to_time(n: u64) -> SystemTime {
 
 #[derive(Debug, BinRead, BinWrite)]
 pub struct MessageHeader {
-    pub id: u16,
+    pub channel_id: u16,
     pub sequence: u32,
 
     #[br(map = nanos_to_time)]
