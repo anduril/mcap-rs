@@ -242,10 +242,7 @@ fn read_record(op: u8, body: &[u8]) -> binrw::BinResult<Record<'_>> {
 
 enum ChunkDecompressor<'a> {
     Null(LinearReader<'a>),
-    Compressed {
-        stream: Option<CountingHasher<Box<dyn Read + 'a>>>,
-        malformed: bool,
-    },
+    Compressed(Option<CountingHasher<Box<dyn Read + 'a>>>),
 }
 
 /// Streams records out of a chunk
@@ -257,16 +254,12 @@ pub struct ChunkReader<'a> {
 impl<'a> ChunkReader<'a> {
     pub fn new(header: records::ChunkHeader, data: &'a [u8]) -> McapResult<Self> {
         let decompressor = match header.compression.as_str() {
-            "zstd" => ChunkDecompressor::Compressed {
-                stream: Some(CountingHasher::new(Box::new(
-                    zstd::stream::read::Decoder::new(data)?,
-                ))),
-                malformed: false,
-            },
-            "lz4" => ChunkDecompressor::Compressed {
-                stream: Some(CountingHasher::new(Box::new(lz4::Decoder::new(data)?))),
-                malformed: false,
-            },
+            "zstd" => ChunkDecompressor::Compressed(Some(CountingHasher::new(Box::new(
+                zstd::stream::read::Decoder::new(data)?,
+            )))),
+            "lz4" => ChunkDecompressor::Compressed(Some(CountingHasher::new(Box::new(
+                lz4::Decoder::new(data)?,
+            )))),
             "" => {
                 if header.uncompressed_size != header.compressed_size {
                     warn!(
@@ -296,13 +289,9 @@ impl<'a> Iterator for ChunkReader<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         match &mut self.decompressor {
             ChunkDecompressor::Null(r) => r.next(),
-            ChunkDecompressor::Compressed { stream, malformed } => {
-                // If we previously encountered an error in this stream, give up.
-                if *malformed {
-                    return None;
-                }
-
-                // If we consumed the stream last time to get the CRC, we're done.
+            ChunkDecompressor::Compressed(stream) => {
+                // If we consumed the stream last time to get the CRC,
+                // or because of an error, we're done.
                 if stream.is_none() {
                     return None;
                 }
@@ -312,7 +301,7 @@ impl<'a> Iterator for ChunkReader<'a> {
                 let record = match read_record_from_chunk_stream(s) {
                     Ok(k) => k,
                     Err(e) => {
-                        *malformed = true;
+                        *stream = None; // Don't try to recover.
                         return Some(Err(e));
                     }
                 };
