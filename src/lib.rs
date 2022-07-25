@@ -330,7 +330,6 @@ impl<'a> Iterator for ChunkReader<'a> {
                         return Some(Err(McapError::BadChunkCrc));
                     }
                     // All good!
-                    return None;
                 }
 
                 Some(Ok(record))
