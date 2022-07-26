@@ -99,7 +99,7 @@ fn read_record_from_slice<'a>(buf: &mut &'a [u8]) -> McapResult<records::Record<
     let body = &buf[..len as usize];
     debug!("slice: opcode {op:02X}, length {len}");
     let record = read_record(op, body)?;
-    trace!("{:?}", record);
+    trace!("       {:?}", record);
 
     *buf = &buf[len as usize..];
     Ok(record)
@@ -272,7 +272,7 @@ fn read_record_from_chunk_stream<'a, R: Read>(r: &mut R) -> McapResult<records::
     let len = r.read_u64::<LE>()?;
 
     debug!("chunk: opcode {op:02X}, length {len}");
-    Ok(match op {
+    let record = match op {
         0x03 => {
             let mut record = Vec::new();
             r.take(len).read_to_end(&mut record)?;
@@ -344,7 +344,9 @@ fn read_record_from_chunk_stream<'a, R: Read>(r: &mut R) -> McapResult<records::
             }
         }
         wut => return Err(McapError::UnexpectedChunkRecord(wut)),
-    })
+    };
+    trace!("       {:?}", record);
+    Ok(record)
 }
 
 /// Flattens chunks into the top-level record stream

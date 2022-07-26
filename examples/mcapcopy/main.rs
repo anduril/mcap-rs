@@ -39,7 +39,7 @@ fn run() -> Result<()> {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        println!(
+        info!(
             "{} {} [{}] [{}]...",
             ts,
             message.channel.topic,

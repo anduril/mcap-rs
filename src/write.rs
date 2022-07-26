@@ -18,6 +18,10 @@ enum WriteMode<W: Write + Seek> {
     Chunk(ChunkWriter<W>),
 }
 
+/// Writes an MCAP file to the given writer
+///
+/// Users should call writer.finish() to flush the stream and check for errors
+/// when done; otherwise the result will be unwrapped on drop.
 pub struct McapWriter<'a, W: Write + Seek> {
     writer: Option<WriteMode<W>>,
     schemas: HashMap<Schema<'a>, u16>,
