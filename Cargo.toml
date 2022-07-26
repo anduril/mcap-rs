@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [profile.dev]
-opt-level = 2 # Profiling!
+opt-level = 3 # Profiling!
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

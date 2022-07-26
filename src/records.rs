@@ -95,16 +95,25 @@ fn parse_vec<T: binrw::BinRead<Args = ()>, R: Read + Seek>(
     Ok(parsed)
 }
 
+#[allow(clippy::ptr_arg)] // needed to match binrw macros
 fn write_vec<W: binrw::io::Write + binrw::io::Seek, T: binrw::BinWrite<Args = ()>>(
     v: &Vec<T>,
     w: &mut W,
     opts: &WriteOptions,
     args: (),
 ) -> BinResult<()> {
-    (v.len() as u32).write_options(w, opts, args)?;
+    use std::io::SeekFrom;
+
+    let start = w.stream_position()?;
+    (!0u32).write_options(w, opts, args)?; // Revisit...
     for e in v.iter() {
         e.write_options(w, opts, args)?;
     }
+    let end = w.stream_position()?;
+    let data_len = end - start - 4;
+    w.seek(SeekFrom::Start(start))?;
+    (data_len as u32).write_options(w, opts, args)?;
+    assert_eq!(w.seek(SeekFrom::End(0))?, end);
     Ok(())
 }
 

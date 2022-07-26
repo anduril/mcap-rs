@@ -1,5 +1,7 @@
+//! Write MCAP files
+
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     io::{self, prelude::*, Cursor, SeekFrom},
     time::UNIX_EPOCH,
 };
@@ -18,10 +20,10 @@ enum WriteMode<W: Write + Seek> {
     Chunk(ChunkWriter<W>),
 }
 
-/// Writes an MCAP file to the given writer
+/// Writes an MCAP file to the given [Write]
 ///
-/// Users should call writer.finish() to flush the stream and check for errors
-/// when done; otherwise the result will be unwrapped on drop.
+/// Users should call [`finish()`](Self::finish) to flush the stream
+/// and check for errors when done; otherwise the result will be unwrapped on drop.
 pub struct McapWriter<'a, W: Write + Seek> {
     writer: Option<WriteMode<W>>,
     schemas: HashMap<Schema<'a>, u16>,
@@ -58,6 +60,9 @@ impl<'a, W: Write + Seek> McapWriter<'a, W> {
         })
     }
 
+    /// Adds a channel (and its provided schema, if any), returning its ID
+    ///
+    /// Useful with subequent calls to [`write_to_known_channel()`](Self::write_to_known_channel)
     pub fn add_channel(&mut self, chan: &Channel<'a>) -> McapResult<u16> {
         let schema_id = match &chan.schema {
             Some(s) => self.add_schema(&*s)?,
@@ -76,6 +81,7 @@ impl<'a, W: Write + Seek> McapWriter<'a, W> {
         Ok(next_channel_id)
     }
 
+    /// Write the given message (and its provided channel, if needed).
     pub fn write(&mut self, message: &Message<'a>) -> McapResult<()> {
         let channel_id = self.add_channel(&message.channel)?;
         let header = MessageHeader {
@@ -88,7 +94,8 @@ impl<'a, W: Write + Seek> McapWriter<'a, W> {
         self.write_to_known_channel(&header, data)
     }
 
-    /// Write a message assuming you already registered the channel and have its ID.
+    /// Write a message to an added channel, given its ID.
+    ///
     /// This skips hash lookups of the channel and schema if you already added them.
     pub fn write_to_known_channel(
         &mut self,
@@ -156,13 +163,18 @@ impl<'a, W: Write + Seek> McapWriter<'a, W> {
         }
     }
 
-    fn finish(&mut self) -> McapResult<()> {
+    /// Finishes any current chunks and writes out the rest of the file.
+    ///
+    /// Subsequent calls to other methods will panic.
+    pub fn finish(&mut self) -> McapResult<()> {
+        // We already called finish() - maybe we're dropping after the user called it?
+        if self.writer.is_none() {
+            return Ok(());
+        }
+
         let mut writer = self.finish_chunk()?;
-        // Save EndOfData for if we write stats
-        /*
         op_and_len(&mut writer, 0x0F, 4)?;
         writer.write_le(&records::EndOfData::default())?;
-        */
         op_and_len(&mut writer, 0x02, 20)?;
         writer.write_le(&records::Footer::default())?;
         writer.write_all(MAGIC)?;
@@ -183,6 +195,7 @@ struct ChunkWriter<W: Write + Seek> {
     stream_start: u64,
     header: records::ChunkHeader,
     compressor: CountingHashingWriter<zstd::Encoder<'static, W>>,
+    indexes: BTreeMap<u16, Vec<records::MessageIndexEntry>>,
 }
 
 impl<W: Write + Seek> ChunkWriter<W> {
@@ -210,6 +223,7 @@ impl<W: Write + Seek> ChunkWriter<W> {
             header_start,
             stream_start,
             header,
+            indexes: BTreeMap::new(),
         })
     }
 
@@ -259,12 +273,20 @@ impl<W: Write + Seek> ChunkWriter<W> {
         // Update min/max time
         self.header.message_start_time = match self.header.message_start_time {
             UNIX_EPOCH => header.log_time,
-            t => t.min(header.log_time)
+            t => t.min(header.log_time),
         };
         self.header.message_end_time = match self.header.message_end_time {
             UNIX_EPOCH => header.log_time,
-            t => t.max(header.log_time)
+            t => t.max(header.log_time),
         };
+        // Add an index for this message
+        self.indexes
+            .entry(header.channel_id)
+            .or_default()
+            .push(records::MessageIndexEntry {
+                log_time: header.log_time,
+                offset: self.compressor.position(),
+            });
 
         let mut header_buf = Cursor::new(Vec::new());
         header_buf.write_le(header).unwrap();
@@ -294,6 +316,20 @@ impl<W: Write + Seek> ChunkWriter<W> {
         writer.write_le(&self.header)?;
         assert_eq!(self.stream_start, writer.stream_position()?);
         assert_eq!(writer.seek(SeekFrom::End(0))?, end_of_stream);
+
+        // Write our message indexes
+        let mut index_buf = Vec::new();
+        for (channel_id, records) in self.indexes {
+            index_buf.clear();
+            let index = records::MessageIndex {
+                channel_id,
+                records,
+            };
+
+            Cursor::new(&mut index_buf).write_le(&index)?;
+            op_and_len(&mut writer, 0x07, index_buf.len())?;
+            writer.write_all(&index_buf)?;
+        }
 
         Ok(writer)
     }
