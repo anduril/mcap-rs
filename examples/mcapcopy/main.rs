@@ -35,11 +35,7 @@ fn run() -> Result<()> {
 
     for message in mcap::MessageStream::new(&mapped)? {
         let message = message?;
-        let ts = message
-            .publish_time
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let ts = message.publish_time;
         info!(
             "{} {} [{}] [{}]...",
             ts,

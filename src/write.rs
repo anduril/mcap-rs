@@ -3,7 +3,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
     io::{self, prelude::*, Cursor, SeekFrom},
-    time::UNIX_EPOCH,
 };
 
 use binrw::prelude::*;
@@ -204,8 +203,8 @@ impl<W: Write + Seek> ChunkWriter<W> {
 
         op_and_len(&mut writer, 0x06, !0)?;
         let header = records::ChunkHeader {
-            message_start_time: UNIX_EPOCH,
-            message_end_time: UNIX_EPOCH,
+            message_start_time: u64::MAX,
+            message_end_time: u64::MIN,
             uncompressed_size: !0,
             uncompressed_crc: !0,
             compression: String::from("zstd"),
@@ -271,14 +270,9 @@ impl<W: Write + Seek> ChunkWriter<W> {
 
     fn write_message(&mut self, header: &MessageHeader, data: &[u8]) -> McapResult<()> {
         // Update min/max time
-        self.header.message_start_time = match self.header.message_start_time {
-            UNIX_EPOCH => header.log_time,
-            t => t.min(header.log_time),
-        };
-        self.header.message_end_time = match self.header.message_end_time {
-            UNIX_EPOCH => header.log_time,
-            t => t.max(header.log_time),
-        };
+        self.header.message_start_time = self.header.message_start_time.min(header.log_time);
+        self.header.message_end_time = self.header.message_end_time.max(header.log_time);
+
         // Add an index for this message
         self.indexes
             .entry(header.channel_id)

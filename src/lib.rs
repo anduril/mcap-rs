@@ -4,7 +4,7 @@ pub mod write;
 
 mod io_utils;
 
-use std::{borrow::Cow, collections::BTreeMap, sync::Arc, time::SystemTime};
+use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 
 use thiserror::Error;
 
@@ -74,8 +74,8 @@ pub struct Channel<'a> {
 pub struct Message<'a> {
     pub channel: Arc<Channel<'a>>,
     pub sequence: u32,
-    pub log_time: SystemTime,
-    pub publish_time: SystemTime,
+    pub log_time: u64,
+    pub publish_time: u64,
     pub data: Cow<'a, [u8]>,
 }
 

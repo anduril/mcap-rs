@@ -270,13 +270,13 @@ pub struct Channel {
     pub metadata: BTreeMap<String, String>,
 }
 
-fn time_to_nanos(d: &SystemTime) -> u64 {
+pub fn system_time_to_nanos(d: &SystemTime) -> u64 {
     let ns = d.duration_since(UNIX_EPOCH).unwrap().as_nanos();
     assert!(ns <= u64::MAX as u128);
     ns as u64
 }
 
-fn nanos_to_time(n: u64) -> SystemTime {
+pub fn nanos_to_system_time(n: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_nanos(n)
 }
 
@@ -285,24 +285,16 @@ pub struct MessageHeader {
     pub channel_id: u16,
     pub sequence: u32,
 
-    #[br(map = nanos_to_time)]
-    #[bw(map = time_to_nanos)]
-    pub log_time: SystemTime,
+    pub log_time: u64,
 
-    #[br(map = nanos_to_time)]
-    #[bw(map = time_to_nanos)]
-    pub publish_time: SystemTime,
+    pub publish_time: u64,
 }
 
 #[derive(Debug, BinRead, BinWrite)]
 pub struct ChunkHeader {
-    #[br(map = nanos_to_time)]
-    #[bw(map = time_to_nanos)]
-    pub message_start_time: SystemTime,
+    pub message_start_time: u64,
 
-    #[br(map = nanos_to_time)]
-    #[bw(map = time_to_nanos)]
-    pub message_end_time: SystemTime,
+    pub message_end_time: u64,
 
     pub uncompressed_size: u64,
 
@@ -317,9 +309,7 @@ pub struct ChunkHeader {
 
 #[derive(Debug, BinRead, BinWrite)]
 pub struct MessageIndexEntry {
-    #[br(map = nanos_to_time)]
-    #[bw(map = time_to_nanos)]
-    pub log_time: SystemTime,
+    pub log_time: u64,
 
     pub offset: u64,
 }
@@ -335,13 +325,9 @@ pub struct MessageIndex {
 
 #[derive(Debug, BinRead, BinWrite)]
 pub struct ChunkIndex {
-    #[br(map = nanos_to_time)]
-    #[bw(map = time_to_nanos)]
-    pub message_start_time: SystemTime,
+    pub message_start_time: u64,
 
-    #[br(map = nanos_to_time)]
-    #[bw(map = time_to_nanos)]
-    pub message_end_time: SystemTime,
+    pub message_end_time: u64,
 
     pub chunk_start_offset: u64,
 
@@ -364,13 +350,9 @@ pub struct ChunkIndex {
 
 #[derive(Debug, BinRead, BinWrite)]
 pub struct AttachmentHeader {
-    #[br(map = nanos_to_time)]
-    #[bw(map = time_to_nanos)]
-    pub log_time: SystemTime,
+    pub log_time: u64,
 
-    #[br(map = nanos_to_time)]
-    #[bw(map = time_to_nanos)]
-    pub create_time: SystemTime,
+    pub create_time: u64,
 
     #[br(map = |s: McapString| s.inner )]
     #[bw(write_with = write_string)]
@@ -389,13 +371,9 @@ pub struct AttachmentIndex {
 
     pub length: u64,
 
-    #[br(map = nanos_to_time)]
-    #[bw(map = time_to_nanos)]
-    pub log_time: SystemTime,
+    pub log_time: u64,
 
-    #[br(map = nanos_to_time)]
-    #[bw(map = time_to_nanos)]
-    pub create_time: SystemTime,
+    pub create_time: u64,
 
     pub data_size: u64,
 
@@ -417,13 +395,9 @@ pub struct Statistics {
     pub metadata_count: u32,
     pub chunk_count: u32,
 
-    #[br(map = nanos_to_time)]
-    #[bw(map = time_to_nanos)]
-    pub message_start_time: SystemTime,
+    pub message_start_time: u64,
 
-    #[br(map = nanos_to_time)]
-    #[bw(map = time_to_nanos)]
-    pub message_end_time: SystemTime,
+    pub message_end_time: u64,
 
     #[br(parse_with = parse_int_map)]
     #[bw(write_with = write_int_map)]
