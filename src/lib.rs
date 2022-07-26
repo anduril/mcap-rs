@@ -12,7 +12,7 @@ use thiserror::Error;
 pub enum McapError {
     #[error("Bad magic number")]
     BadMagic,
-    #[error("A chunk CRC failed")]
+    #[error("Chunk CRC failed")]
     BadChunkCrc,
     #[error("The CRC for the data section failed")]
     BadDataCrc,
@@ -24,7 +24,7 @@ pub enum McapError {
     Parse(#[from] binrw::Error),
     #[error("I/O error from writing, or reading a compression stream")]
     Io(#[from] std::io::Error),
-    #[error("A schema has an ID of 0")]
+    #[error("Schema has an ID of 0")]
     InvalidSchemaId,
     #[error("MCAP file ended in the middle of a record")]
     UnexpectedEof,
