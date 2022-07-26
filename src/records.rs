@@ -119,7 +119,7 @@ pub struct Header {
     pub library: String,
 }
 
-#[derive(Debug, BinRead, BinWrite)]
+#[derive(Debug, BinRead, BinWrite, Default)]
 pub struct Footer {
     pub summary_start: u64,
     pub summary_offset_start: u64,
@@ -450,7 +450,7 @@ pub struct SummaryOffset {
     pub group_length: u64,
 }
 
-#[derive(Debug, BinRead, BinWrite)]
+#[derive(Debug, BinRead, BinWrite, Default)]
 pub struct EndOfData {
     pub data_section_crc: u32,
 }

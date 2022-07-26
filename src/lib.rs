@@ -1,9 +1,10 @@
 pub mod read;
 pub mod records;
+pub mod write;
 
-mod read_utils;
+mod io_utils;
 
-use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
+use std::{borrow::Cow, collections::BTreeMap, sync::Arc, time::SystemTime};
 
 use thiserror::Error;
 
@@ -21,8 +22,8 @@ pub enum McapError {
     ConflictingSchemas(String),
     #[error("Record parse failed")]
     Parse(#[from] binrw::Error),
-    #[error("I/O error in compression stream")]
-    Compression(#[from] std::io::Error),
+    #[error("I/O error from writing, or reading a compression stream")]
+    Io(#[from] std::io::Error),
     #[error("A schema has an ID of 0")]
     InvalidSchemaId,
     #[error("MCAP file ended in the middle of a record")]
@@ -48,7 +49,7 @@ pub const MAGIC: &[u8] = &[0x89, b'M', b'C', b'A', b'P', 0x30, b'\r', b'\n'];
 ///
 /// The CoW can either borrow directly from the mapped file,
 /// or hold its own buffer if it was decompressed from a chunk.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Schema<'a> {
     pub name: String,
     pub encoding: String,
@@ -56,7 +57,7 @@ pub struct Schema<'a> {
 }
 
 /// Describes a channel which [Message]s are published to in an MCAP file
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Channel<'a> {
     pub topic: String,
     pub schema: Option<Arc<Schema<'a>>>,
@@ -65,4 +66,18 @@ pub struct Channel<'a> {
     pub metadata: BTreeMap<String, String>,
 }
 
+/// An event in an MCAP file, published to a [Channel]
+///
+/// The CoW can either borrow directly from the mapped file,
+/// or hold its own buffer if it was decompressed from a chunk.
+#[derive(Debug)]
+pub struct Message<'a> {
+    pub channel: Arc<Channel<'a>>,
+    pub sequence: u32,
+    pub log_time: SystemTime,
+    pub publish_time: SystemTime,
+    pub data: Cow<'a, [u8]>,
+}
+
 pub use read::MessageStream;
+pub use write::McapWriter;

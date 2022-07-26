@@ -30,23 +30,8 @@ fn run() -> Result<()> {
 
     let mapped = map_mcap(&args.mcap)?;
 
-    /*
-    for record in mcap::read::LinearReader::new(&mapped)? {
-        let record = record?;
-        println!("{:?}", record);
-        if let mcap::records::Record::Chunk { header, data } = record {
-            for dechunked in mcap::read::ChunkReader::new(header, data)? {
-                println!("\t{:?}", dechunked?);
-            }
-        }
-    }
-    for record in mcap::read::ChunkFlattener::new(&mapped)? {
-        let record = record?;
-        if let mcap::records::Record::Message { header, .. } = record {
-            println!("{:?}", header);
-        }
-    }
-    */
+    let mut out = mcap::McapWriter::new(std::fs::File::create("out.mcap")?)?;
+
     for message in mcap::MessageStream::new(&mapped)? {
         let message = message?;
         let ts = message
@@ -72,6 +57,7 @@ fn run() -> Result<()> {
                 .collect::<Vec<_>>()
                 .join(" ")
         );
+        out.write(&message)?;
     }
     Ok(())
 }

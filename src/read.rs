@@ -5,7 +5,6 @@ use std::{
     collections::HashMap,
     io::{prelude::*, Cursor},
     sync::Arc,
-    time::SystemTime,
 };
 
 use binrw::prelude::*;
@@ -13,9 +12,9 @@ use crc32fast::hash as crc32;
 use log::*;
 
 use crate::{
-    read_utils::CountingHasher,
+    io_utils::CountingHashingReader,
     records::{self, Record},
-    Channel, McapError, McapResult, Schema, MAGIC,
+    Channel, McapError, McapResult, Message, Schema, MAGIC,
 };
 
 /// Scans a mapped MCAP file from start to end, returning each record.
@@ -98,7 +97,9 @@ fn read_record_from_slice<'a>(buf: &mut &'a [u8]) -> McapResult<records::Record<
     }
 
     let body = &buf[..len as usize];
+    debug!("slice: opcode {op:02X}, length {len}");
     let record = read_record(op, body)?;
+    trace!("{:?}", record);
 
     *buf = &buf[len as usize..];
     Ok(record)
@@ -176,7 +177,7 @@ fn read_record(op: u8, body: &[u8]) -> binrw::BinResult<records::Record<'_>> {
 
 enum ChunkDecompressor<'a> {
     Null(LinearReader<'a>),
-    Compressed(Option<CountingHasher<Box<dyn Read + 'a>>>),
+    Compressed(Option<CountingHashingReader<Box<dyn Read + 'a>>>),
 }
 
 /// Streams records out of a [Chunk](Record::Chunk), decompressing as needed.
@@ -188,10 +189,10 @@ pub struct ChunkReader<'a> {
 impl<'a> ChunkReader<'a> {
     pub fn new(header: records::ChunkHeader, data: &'a [u8]) -> McapResult<Self> {
         let decompressor = match header.compression.as_str() {
-            "zstd" => ChunkDecompressor::Compressed(Some(CountingHasher::new(Box::new(
-                zstd::stream::read::Decoder::new(data)?,
+            "zstd" => ChunkDecompressor::Compressed(Some(CountingHashingReader::new(Box::new(
+                zstd::Decoder::new(data)?,
             )))),
-            "lz4" => ChunkDecompressor::Compressed(Some(CountingHasher::new(Box::new(
+            "lz4" => ChunkDecompressor::Compressed(Some(CountingHashingReader::new(Box::new(
                 lz4::Decoder::new(data)?,
             )))),
             "" => {
@@ -270,6 +271,7 @@ fn read_record_from_chunk_stream<'a, R: Read>(r: &mut R) -> McapResult<records::
     let op = r.read_u8()?;
     let len = r.read_u64::<LE>()?;
 
+    debug!("chunk: opcode {op:02X}, length {len}");
     Ok(match op {
         0x03 => {
             let mut record = Vec::new();
@@ -405,19 +407,6 @@ impl<'a> Iterator for ChunkFlattener<'a> {
         }
         n
     }
-}
-
-/// An event in an MCAP file, published to a [Channel]
-///
-/// The CoW can either borrow directly from the mapped file,
-/// or hold its own buffer if it was decompressed from a chunk.
-#[derive(Debug)]
-pub struct Message<'a> {
-    pub channel: Arc<Channel<'a>>,
-    pub sequence: u32,
-    pub log_time: SystemTime,
-    pub publish_time: SystemTime,
-    pub data: Cow<'a, [u8]>,
 }
 
 /// Read all messages from the MCAP file in the order they were written,
