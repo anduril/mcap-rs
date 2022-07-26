@@ -386,7 +386,7 @@ pub struct AttachmentIndex {
     pub content_type: String,
 }
 
-#[derive(Debug, BinRead, BinWrite)]
+#[derive(Debug, Default, Clone, BinRead, BinWrite)]
 pub struct Statistics {
     pub message_count: u64,
     pub schema_count: u16,
@@ -401,7 +401,7 @@ pub struct Statistics {
 
     #[br(parse_with = parse_int_map)]
     #[bw(write_with = write_int_map)]
-    pub message_index_offsets: BTreeMap<u16, u64>,
+    pub channel_message_counts: BTreeMap<u16, u64>,
 }
 
 #[derive(Debug, BinRead, BinWrite)]

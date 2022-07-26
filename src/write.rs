@@ -21,16 +21,6 @@ enum WriteMode<W: Write + Seek> {
     Chunk(ChunkWriter<W>),
 }
 
-/// Writes an MCAP file to the given [Write]
-///
-/// Users should call [`finish()`](Self::finish) to flush the stream
-/// and check for errors when done; otherwise the result will be unwrapped on drop.
-pub struct McapWriter<'a, W: Write + Seek> {
-    writer: Option<WriteMode<W>>,
-    schemas: HashMap<Schema<'a>, u16>,
-    channels: HashMap<Channel<'a>, u16>,
-}
-
 fn op_and_len<W: Write>(w: &mut W, op: u8, len: usize) -> io::Result<()> {
     use byteorder::{WriteBytesExt, LE};
     w.write_u8(op)?;
@@ -74,9 +64,21 @@ fn write_record<W: Write>(w: &mut W, r: &Record) -> io::Result<()> {
         Record::MessageIndex(_) => {
             unreachable!("MessageIndexes handle their own serialization to recycle the buffer between indexes")
         }
+        Record::Statistics(s) => record!(0x0B, s),
         _ => todo!(),
     };
     Ok(())
+}
+
+/// Writes an MCAP file to the given [Write]
+///
+/// Users should call [`finish()`](Self::finish) to flush the stream
+/// and check for errors when done; otherwise the result will be unwrapped on drop.
+pub struct McapWriter<'a, W: Write + Seek> {
+    writer: Option<WriteMode<W>>,
+    schemas: HashMap<Schema<'a>, u16>,
+    channels: HashMap<Channel<'a>, u16>,
+    stats: records::Statistics,
 }
 
 impl<'a, W: Write + Seek> McapWriter<'a, W> {
@@ -95,6 +97,7 @@ impl<'a, W: Write + Seek> McapWriter<'a, W> {
             writer: Some(WriteMode::Raw(writer)),
             schemas: HashMap::new(),
             channels: HashMap::new(),
+            stats: records::Statistics::default(),
         })
     }
 
@@ -113,7 +116,11 @@ impl<'a, W: Write + Seek> McapWriter<'a, W> {
 
         let next_channel_id = self.channels.len() as u16;
 
-        self.channels.insert(chan.clone(), next_channel_id);
+        self.stats.channel_count += 1;
+        assert!(self
+            .channels
+            .insert(chan.clone(), next_channel_id)
+            .is_none());
         self.chunkin_time()?
             .write_channel(next_channel_id, schema_id, chan)?;
         Ok(next_channel_id)
@@ -148,6 +155,22 @@ impl<'a, W: Write + Seek> McapWriter<'a, W> {
                 header.channel_id,
             ));
         }
+
+        self.stats.message_count += 1;
+        self.stats.message_start_time = match self.stats.message_start_time {
+            0 => header.log_time,
+            nz => nz.min(header.log_time),
+        };
+        self.stats.message_end_time = match self.stats.message_end_time {
+            0 => header.log_time,
+            nz => nz.max(header.log_time),
+        };
+        *self
+            .stats
+            .channel_message_counts
+            .entry(header.channel_id)
+            .or_insert(0) += 1;
+
         self.chunkin_time()?.write_message(header, data)?;
         Ok(())
     }
@@ -161,7 +184,11 @@ impl<'a, W: Write + Seek> McapWriter<'a, W> {
         // for "no schema"
         let next_schema_id = self.schemas.len() as u16 + 1;
 
-        self.schemas.insert(schema.clone(), next_schema_id);
+        self.stats.schema_count += 1;
+        assert!(self
+            .schemas
+            .insert(schema.clone(), next_schema_id)
+            .is_none());
         self.chunkin_time()?.write_schema(next_schema_id, schema)?;
         Ok(next_schema_id)
     }
@@ -175,7 +202,11 @@ impl<'a, W: Write + Seek> McapWriter<'a, W> {
         let prev_writer = self.writer.take().unwrap();
 
         self.writer = Some(match prev_writer {
-            WriteMode::Raw(w) => WriteMode::Chunk(ChunkWriter::new(w)?),
+            WriteMode::Raw(w) => {
+                // It's chunkin time.
+                self.stats.chunk_count += 1;
+                WriteMode::Chunk(ChunkWriter::new(w)?)
+            }
             chunk => chunk,
         });
 
@@ -205,17 +236,92 @@ impl<'a, W: Write + Seek> McapWriter<'a, W> {
     ///
     /// Subsequent calls to other methods will panic.
     pub fn finish(&mut self) -> McapResult<()> {
-        // We already called finish() - maybe we're dropping after the user called it?
         if self.writer.is_none() {
+            // We already called finish().
+            // Maybe we're dropping after the user called it?
             return Ok(());
         }
 
+        // Boo, we have to take a copy because we're about to grab a mutable borrow out on self.writer
+        let stats = self.stats.clone();
+
+        // Make some Schema and Channel lists for the summary section.
+        // Be sure to grab schema IDs for the channels from the schema hash map before we drain it!
+        struct ChannelSummary<'a> {
+            channel: Channel<'a>,
+            channel_id: u16,
+            schema_id: u16,
+        }
+
+        let mut all_channels: Vec<ChannelSummary<'_>> = self
+            .channels
+            .drain()
+            .map(|(channel, channel_id)| {
+                let schema_id = match &channel.schema {
+                    Some(s) => *self.schemas.get(s).unwrap(),
+                    None => 0,
+                };
+
+                ChannelSummary {
+                    channel,
+                    channel_id,
+                    schema_id,
+                }
+            })
+            .collect();
+        all_channels.sort_unstable_by_key(|cs| cs.channel_id);
+
+        let mut all_schemas: Vec<(Schema<'_>, u16)> = self.schemas.drain().collect();
+        all_schemas.sort_unstable_by_key(|(_, v)| *v);
+
+        // Finish any chunk we were working on.
         let mut writer = self.finish_chunk()?;
+        // We're done with the data secton!
         write_record(
             &mut writer,
             &Record::EndOfData(records::EndOfData::default()),
         )?;
-        write_record(&mut writer, &Record::Footer(records::Footer::default()))?;
+
+        let summary_start = writer.stream_position()?;
+
+        // Let's get a CRC of the summary section.
+        let mut summary_hasher = CountingHashingWriter::new(writer);
+
+        for (schema, id) in all_schemas {
+            let header = records::SchemaHeader {
+                id,
+                name: schema.name,
+                encoding: schema.encoding,
+                data_len: schema.data.len() as u32,
+            };
+            let data = schema.data;
+
+            write_record(&mut summary_hasher, &Record::Schema { header, data })?;
+        }
+        for cs in all_channels {
+            let rec = records::Channel {
+                id: cs.channel_id,
+                schema_id: cs.schema_id,
+                topic: cs.channel.topic,
+                message_encoding: cs.channel.message_encoding,
+                metadata: cs.channel.metadata,
+            };
+            write_record(&mut summary_hasher, &Record::Channel(rec))?;
+        }
+
+        write_record(&mut summary_hasher, &Record::Statistics(stats))?;
+
+        let (writer, summary_crc) = summary_hasher.finalize();
+
+        write_record(
+            writer,
+            &Record::Footer(records::Footer {
+                summary_start,
+                summary_offset_start: 0, // Not provided yet
+                summary_crc,
+            }),
+        )?;
+
         writer.write_all(MAGIC)?;
         writer.flush()?;
         self.writer = None; // Make subsequent writes fail
