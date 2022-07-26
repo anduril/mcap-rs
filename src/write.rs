@@ -1,6 +1,7 @@
 //! Write MCAP files
 
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, HashMap},
     io::{self, prelude::*, Cursor, SeekFrom},
 };
@@ -8,8 +9,9 @@ use std::{
 use binrw::prelude::*;
 
 use crate::{
-    io_utils::CountingHashingWriter, records, Channel, McapError, McapResult, Message, Schema,
-    MAGIC,
+    io_utils::CountingHashingWriter,
+    records::{self, Record},
+    Channel, McapError, McapResult, Message, Schema, MAGIC,
 };
 
 pub use records::MessageHeader;
@@ -29,10 +31,51 @@ pub struct McapWriter<'a, W: Write + Seek> {
     channels: HashMap<Channel<'a>, u16>,
 }
 
-fn op_and_len<W: Write>(mut w: W, op: u8, len: usize) -> io::Result<()> {
+fn op_and_len<W: Write>(w: &mut W, op: u8, len: usize) -> io::Result<()> {
     use byteorder::{WriteBytesExt, LE};
     w.write_u8(op)?;
     w.write_u64::<LE>(len as u64)?;
+    Ok(())
+}
+
+fn write_record<W: Write>(w: &mut W, r: &Record) -> io::Result<()> {
+    // Annoying: our stream isn't Seek, so we need an intermediate buffer.
+    macro_rules! record {
+        ($op:literal, $b:ident) => {{
+            let mut rec_buf = Vec::new();
+            Cursor::new(&mut rec_buf).write_le($b).unwrap();
+
+            op_and_len(w, $op, rec_buf.len())?;
+            w.write_all(&rec_buf)?;
+        }};
+    }
+
+    macro_rules! header_and_data {
+        ($op:literal, $header:ident, $data:ident) => {{
+            let mut header_buf = Vec::new();
+            Cursor::new(&mut header_buf).write_le($header).unwrap();
+
+            op_and_len(w, $op, header_buf.len() + $data.len())?;
+            w.write_all(&header_buf)?;
+            w.write_all($data)?;
+        }};
+    }
+
+    match r {
+        Record::Header(h) => record!(0x01, h),
+        Record::Footer(f) => record!(0x02, f),
+        Record::Schema { header, data } => header_and_data!(0x03, header, data),
+        Record::Channel(c) => record!(0x04, c),
+        Record::Message { header, data } => header_and_data!(0x05, header, data),
+        Record::EndOfData(eod) => record!(0x0F, eod),
+        Record::Chunk { .. } => {
+            unreachable!("Chunks handle their own serialization due to seeking shenanigans")
+        }
+        Record::MessageIndex(_) => {
+            unreachable!("MessageIndexes handle their own serialization to recycle the buffer between indexes")
+        }
+        _ => todo!(),
+    };
     Ok(())
 }
 
@@ -40,17 +83,13 @@ impl<'a, W: Write + Seek> McapWriter<'a, W> {
     pub fn new(mut writer: W) -> McapResult<Self> {
         writer.write_all(MAGIC)?;
 
-        let mut header_buf = Cursor::new(Vec::new());
-        header_buf
-            .write_le(&records::Header {
+        write_record(
+            &mut writer,
+            &Record::Header(records::Header {
                 profile: String::new(),
                 library: String::from("mcap-rs 0.1"),
-            })
-            .unwrap();
-        let header_buf = header_buf.into_inner();
-
-        op_and_len(&mut writer, 0x01, header_buf.len())?;
-        writer.write_all(&header_buf)?;
+            }),
+        )?;
 
         Ok(Self {
             writer: Some(WriteMode::Raw(writer)),
@@ -172,10 +211,11 @@ impl<'a, W: Write + Seek> McapWriter<'a, W> {
         }
 
         let mut writer = self.finish_chunk()?;
-        op_and_len(&mut writer, 0x0F, 4)?;
-        writer.write_le(&records::EndOfData::default())?;
-        op_and_len(&mut writer, 0x02, 20)?;
-        writer.write_le(&records::Footer::default())?;
+        write_record(
+            &mut writer,
+            &Record::EndOfData(records::EndOfData::default()),
+        )?;
+        write_record(&mut writer, &Record::Footer(records::Footer::default()))?;
         writer.write_all(MAGIC)?;
         writer.flush()?;
         self.writer = None; // Make subsequent writes fail
@@ -227,24 +267,19 @@ impl<W: Write + Seek> ChunkWriter<W> {
     }
 
     fn write_schema(&mut self, id: u16, schema: &Schema) -> McapResult<()> {
-        let rec = records::SchemaHeader {
+        let header = records::SchemaHeader {
             id,
             name: schema.name.clone(),
             encoding: schema.encoding.clone(),
             data_len: schema.data.len() as u32,
         };
-        // Annoying: our stream isn't Seek, so we need an intermediate buffer.
-        let mut header_buf = Cursor::new(Vec::new());
-        header_buf.write_le(&rec).unwrap();
-        let header_buf = header_buf.into_inner();
-
-        op_and_len(
+        write_record(
             &mut self.compressor,
-            0x03,
-            header_buf.len() + schema.data.len(),
+            &Record::Schema {
+                header,
+                data: Cow::Borrowed(&schema.data),
+            },
         )?;
-        self.compressor.write_all(&header_buf)?;
-        self.compressor.write_all(&schema.data)?;
         Ok(())
     }
 
@@ -259,12 +294,7 @@ impl<W: Write + Seek> ChunkWriter<W> {
             metadata: chan.metadata.clone(),
         };
 
-        let mut channel_buf = Cursor::new(Vec::new());
-        channel_buf.write_le(&rec).unwrap();
-        let channel_buf = channel_buf.into_inner();
-
-        op_and_len(&mut self.compressor, 0x04, channel_buf.len())?;
-        self.compressor.write_all(&channel_buf)?;
+        write_record(&mut self.compressor, &Record::Channel(rec))?;
         Ok(())
     }
 
@@ -282,13 +312,13 @@ impl<W: Write + Seek> ChunkWriter<W> {
                 offset: self.compressor.position(),
             });
 
-        let mut header_buf = Cursor::new(Vec::new());
-        header_buf.write_le(header).unwrap();
-        let header_buf = header_buf.into_inner();
-
-        op_and_len(&mut self.compressor, 0x05, header_buf.len() + data.len())?;
-        self.compressor.write_all(&header_buf)?;
-        self.compressor.write_all(data)?;
+        write_record(
+            &mut self.compressor,
+            &Record::Message {
+                header: *header,
+                data: Cow::Borrowed(data),
+            },
+        )?;
         Ok(())
     }
 

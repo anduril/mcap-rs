@@ -280,7 +280,7 @@ pub fn nanos_to_system_time(n: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_nanos(n)
 }
 
-#[derive(Debug, BinRead, BinWrite)]
+#[derive(Debug, Copy, Clone, BinRead, BinWrite)]
 pub struct MessageHeader {
     pub channel_id: u16,
     pub sequence: u32,
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn header_parse() {
-        let expected = b"\x04\0\0\0abcd\x03\0\0\0123";
+        let expected = b"\x04\0\0\0abcd\x03\0\0\x00123";
 
         let h: Header = Cursor::new(expected).read_le().unwrap();
         assert_eq!(h.profile, "abcd");
