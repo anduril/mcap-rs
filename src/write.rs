@@ -349,8 +349,8 @@ impl<W: Write + Seek> ChunkWriter<W> {
 
         op_and_len(&mut writer, 0x06, !0)?;
         let header = records::ChunkHeader {
-            message_start_time: u64::MAX,
-            message_end_time: u64::MIN,
+            message_start_time: 0,
+            message_end_time: 0,
             uncompressed_size: !0,
             uncompressed_crc: !0,
             compression: String::from("zstd"),
@@ -406,8 +406,14 @@ impl<W: Write + Seek> ChunkWriter<W> {
 
     fn write_message(&mut self, header: &MessageHeader, data: &[u8]) -> McapResult<()> {
         // Update min/max time
-        self.header.message_start_time = self.header.message_start_time.min(header.log_time);
-        self.header.message_end_time = self.header.message_end_time.max(header.log_time);
+        self.header.message_start_time = match self.header.message_start_time {
+            0 => header.log_time,
+            nz => nz.min(header.log_time),
+        };
+        self.header.message_end_time = match self.header.message_end_time {
+            0 => header.log_time,
+            nz => nz.max(header.log_time),
+        };
 
         // Add an index for this message
         self.indexes
