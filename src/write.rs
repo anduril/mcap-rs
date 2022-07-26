@@ -53,18 +53,21 @@ fn write_record<W: Write>(w: &mut W, r: &Record) -> io::Result<()> {
 
     match r {
         Record::Header(h) => record!(0x01, h),
-        Record::Footer(f) => record!(0x02, f),
+        Record::Footer(_) => {
+            unreachable!("Footer handles its own serialization because its CRC is self-referencing")
+        }
         Record::Schema { header, data } => header_and_data!(0x03, header, data),
         Record::Channel(c) => record!(0x04, c),
         Record::Message { header, data } => header_and_data!(0x05, header, data),
-        Record::EndOfData(eod) => record!(0x0F, eod),
         Record::Chunk { .. } => {
             unreachable!("Chunks handle their own serialization due to seeking shenanigans")
         }
         Record::MessageIndex(_) => {
             unreachable!("MessageIndexes handle their own serialization to recycle the buffer between indexes")
         }
+        Record::ChunkIndex(c) => record!(0x08, c),
         Record::Statistics(s) => record!(0x0B, s),
+        Record::EndOfData(eod) => record!(0x0F, eod),
         _ => todo!(),
     };
     Ok(())
@@ -79,6 +82,7 @@ pub struct McapWriter<'a, W: Write + Seek> {
     schemas: HashMap<Schema<'a>, u16>,
     channels: HashMap<Channel<'a>, u16>,
     stats: records::Statistics,
+    chunk_indexes: Vec<records::ChunkIndex>,
 }
 
 impl<'a, W: Write + Seek> McapWriter<'a, W> {
@@ -98,6 +102,7 @@ impl<'a, W: Write + Seek> McapWriter<'a, W> {
             schemas: HashMap::new(),
             channels: HashMap::new(),
             stats: records::Statistics::default(),
+            chunk_indexes: Vec::new(),
         })
     }
 
@@ -222,7 +227,11 @@ impl<'a, W: Write + Seek> McapWriter<'a, W> {
         let prev_writer = self.writer.take().unwrap();
 
         self.writer = Some(match prev_writer {
-            WriteMode::Chunk(c) => WriteMode::Raw(c.finish()?),
+            WriteMode::Chunk(c) => {
+                let (w, index) = c.finish()?;
+                self.chunk_indexes.push(index);
+                WriteMode::Raw(w)
+            }
             raw => raw,
         });
 
@@ -242,8 +251,18 @@ impl<'a, W: Write + Seek> McapWriter<'a, W> {
             return Ok(());
         }
 
-        // Boo, we have to take a copy because we're about to grab a mutable borrow out on self.writer
-        let stats = self.stats.clone();
+        // Finish any chunk we were working on and update stats, indexes, etc.
+        self.finish_chunk()?;
+
+        // Grab all the data we need for the summary now because we're about to
+        // take a mutable borrow out on self.writer.
+        // (We could get around all this noise by having finish() take self(),
+        // but then it wouldn't be droppable _and_ finish...able.
+        let mut stats = records::Statistics::default();
+        std::mem::swap(&mut stats, &mut self.stats);
+
+        let mut chunk_indexes = Vec::new();
+        std::mem::swap(&mut chunk_indexes, &mut self.chunk_indexes);
 
         // Make some Schema and Channel lists for the summary section.
         // Be sure to grab schema IDs for the channels from the schema hash map before we drain it!
@@ -274,19 +293,22 @@ impl<'a, W: Write + Seek> McapWriter<'a, W> {
         let mut all_schemas: Vec<(Schema<'_>, u16)> = self.schemas.drain().collect();
         all_schemas.sort_unstable_by_key(|(_, v)| *v);
 
-        // Finish any chunk we were working on.
-        let mut writer = self.finish_chunk()?;
+        // We called finish_chunk() above, so we're back to raw writes for
+        // the summary section.
+        let writer = match &mut self.writer {
+            Some(WriteMode::Raw(w)) => w,
+            _ => unreachable!(),
+        };
+
         // We're done with the data secton!
-        write_record(
-            &mut writer,
-            &Record::EndOfData(records::EndOfData::default()),
-        )?;
+        write_record(writer, &Record::EndOfData(records::EndOfData::default()))?;
 
         let summary_start = writer.stream_position()?;
 
         // Let's get a CRC of the summary section.
         let mut summary_hasher = CountingHashingWriter::new(writer);
 
+        // Write all schemas.
         for (schema, id) in all_schemas {
             let header = records::SchemaHeader {
                 id,
@@ -298,6 +320,7 @@ impl<'a, W: Write + Seek> McapWriter<'a, W> {
 
             write_record(&mut summary_hasher, &Record::Schema { header, data })?;
         }
+        // Write all channels.
         for cs in all_channels {
             let rec = records::Channel {
                 id: cs.channel_id,
@@ -309,18 +332,23 @@ impl<'a, W: Write + Seek> McapWriter<'a, W> {
             write_record(&mut summary_hasher, &Record::Channel(rec))?;
         }
 
+        // Write all chunk indexes.
+        for index in chunk_indexes {
+            write_record(&mut summary_hasher, &Record::ChunkIndex(index))?;
+        }
+
         write_record(&mut summary_hasher, &Record::Statistics(stats))?;
+
+        // In an incredibly bizarre move, the CRC of the footer _includes_
+        // part of the footer. All of the wat.
+        use byteorder::{WriteBytesExt, LE};
+        op_and_len(&mut summary_hasher, 0x02, 20)?;
+        summary_hasher.write_u64::<LE>(summary_start)?;
+        summary_hasher.write_u64::<LE>(0)?; // Summary offsets not provided yet.
 
         let (writer, summary_crc) = summary_hasher.finalize();
 
-        write_record(
-            writer,
-            &Record::Footer(records::Footer {
-                summary_start,
-                summary_offset_start: 0, // Not provided yet
-                summary_crc,
-            }),
-        )?;
+        writer.write_u32::<LE>(summary_crc)?;
 
         writer.write_all(MAGIC)?;
         writer.flush()?;
@@ -434,7 +462,7 @@ impl<W: Write + Seek> ChunkWriter<W> {
         Ok(())
     }
 
-    fn finish(mut self) -> McapResult<W> {
+    fn finish(mut self) -> McapResult<(W, records::ChunkIndex)> {
         // Get the number of uncompressed bytes written and the CRC.
         self.header.uncompressed_size = self.compressor.position();
         let (zstd_stream, crc) = self.compressor.finalize();
@@ -454,8 +482,13 @@ impl<W: Write + Seek> ChunkWriter<W> {
         assert_eq!(writer.seek(SeekFrom::End(0))?, end_of_stream);
 
         // Write our message indexes
+        let mut message_index_offsets: BTreeMap<u16, u64> = BTreeMap::new();
+
         let mut index_buf = Vec::new();
         for (channel_id, records) in self.indexes {
+            assert!(message_index_offsets
+                .insert(channel_id, writer.stream_position()?)
+                .is_none());
             index_buf.clear();
             let index = records::MessageIndex {
                 channel_id,
@@ -466,7 +499,20 @@ impl<W: Write + Seek> ChunkWriter<W> {
             op_and_len(&mut writer, 0x07, index_buf.len())?;
             writer.write_all(&index_buf)?;
         }
+        let end_of_indexes = writer.stream_position()?;
 
-        Ok(writer)
+        let index = records::ChunkIndex {
+            message_start_time: self.header.message_start_time,
+            message_end_time: self.header.message_end_time,
+            chunk_start_offset: self.header_start,
+            chunk_length: end_of_stream - self.header_start,
+            message_index_offsets,
+            message_index_length: end_of_indexes - end_of_stream,
+            compression: self.header.compression,
+            compressed_size: self.header.compressed_size,
+            uncompressed_size: self.header.uncompressed_size,
+        };
+
+        Ok((writer, index))
     }
 }
