@@ -77,7 +77,7 @@ fn write_record<W: Write>(w: &mut W, r: &Record) -> io::Result<()> {
 ///
 /// Users should call [`finish()`](Self::finish) to flush the stream
 /// and check for errors when done; otherwise the result will be unwrapped on drop.
-pub struct McapWriter<'a, W: Write + Seek> {
+pub struct Writer<'a, W: Write + Seek> {
     writer: Option<WriteMode<W>>,
     schemas: HashMap<Schema<'a>, u16>,
     channels: HashMap<Channel<'a>, u16>,
@@ -85,7 +85,7 @@ pub struct McapWriter<'a, W: Write + Seek> {
     chunk_indexes: Vec<records::ChunkIndex>,
 }
 
-impl<'a, W: Write + Seek> McapWriter<'a, W> {
+impl<'a, W: Write + Seek> Writer<'a, W> {
     pub fn new(mut writer: W) -> McapResult<Self> {
         writer.write_all(MAGIC)?;
 
@@ -357,7 +357,7 @@ impl<'a, W: Write + Seek> McapWriter<'a, W> {
     }
 }
 
-impl<'a, W: Write + Seek> Drop for McapWriter<'a, W> {
+impl<'a, W: Write + Seek> Drop for Writer<'a, W> {
     fn drop(&mut self) {
         self.finish().unwrap()
     }

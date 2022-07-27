@@ -84,4 +84,4 @@ pub struct Message<'a> {
 }
 
 pub use read::{read_summary, MessageStream};
-pub use write::McapWriter;
+pub use write::Writer;

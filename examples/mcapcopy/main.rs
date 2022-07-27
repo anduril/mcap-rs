@@ -31,7 +31,7 @@ fn run() -> Result<()> {
     let mapped = map_mcap(&args.mcap)?;
 
     let mut out =
-        mcap::McapWriter::new(std::io::BufWriter::new(std::fs::File::create("out.mcap")?))?;
+        mcap::Writer::new(std::io::BufWriter::new(std::fs::File::create("out.mcap")?))?;
 
     for message in mcap::MessageStream::new(&mapped)? {
         let message = message?;
