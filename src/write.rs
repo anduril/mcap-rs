@@ -256,7 +256,7 @@ impl<'a, W: Write + Seek> McapWriter<'a, W> {
 
         // Grab all the data we need for the summary now because we're about to
         // take a mutable borrow out on self.writer.
-        // (We could get around all this noise by having finish() take self(),
+        // (We could get around all this noise by having finish() take self,
         // but then it wouldn't be droppable _and_ finish...able.
         let mut stats = records::Statistics::default();
         std::mem::swap(&mut stats, &mut self.stats);
@@ -339,7 +339,7 @@ impl<'a, W: Write + Seek> McapWriter<'a, W> {
 
         write_record(&mut summary_hasher, &Record::Statistics(stats))?;
 
-        // In an incredibly bizarre move, the CRC of the footer _includes_
+        // In an incredibly bizarre move, the CRC in the footer _includes_
         // part of the footer. All of the wat.
         use byteorder::{WriteBytesExt, LE};
         op_and_len(&mut summary_hasher, 0x02, 20)?;

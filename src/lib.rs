@@ -14,8 +14,12 @@ pub enum McapError {
     BadMagic,
     #[error("Chunk CRC failed")]
     BadChunkCrc,
-    #[error("The CRC for the data section failed")]
+    #[error("Data section CRC failed")]
     BadDataCrc,
+    #[error("Summary section CRC failed")]
+    BadSummaryCrc,
+    #[error("Footer record couldn't be found at the end of the file, before the magic bytes")]
+    BadFooter,
     #[error("Channel `{0}` has mulitple records that don't match.")]
     ConflictingChannels(String),
     #[error("Schema `{0}` has mulitple records that don't match.")]
@@ -79,5 +83,5 @@ pub struct Message<'a> {
     pub data: Cow<'a, [u8]>,
 }
 
-pub use read::MessageStream;
+pub use read::{read_summary, MessageStream};
 pub use write::McapWriter;

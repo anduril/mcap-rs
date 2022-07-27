@@ -411,6 +411,70 @@ impl<'a> Iterator for ChunkFlattener<'a> {
     }
 }
 
+/// Parses schemas and channels and wires them together
+#[derive(Debug, Default)]
+struct ChannelAccumulator<'a> {
+    schemas: HashMap<u16, Arc<Schema<'a>>>,
+    channels: HashMap<u16, Arc<Channel<'a>>>,
+}
+
+impl<'a> ChannelAccumulator<'a> {
+    fn add_schema(&mut self, header: records::SchemaHeader, data: Cow<'a, [u8]>) -> McapResult<()> {
+        if header.id == 0 {
+            return Err(McapError::InvalidSchemaId);
+        }
+
+        let schema = Arc::new(Schema {
+            name: header.name.clone(),
+            encoding: header.encoding,
+            data,
+        });
+
+        if let Some(preexisting) = self.schemas.insert(header.id, schema.clone()) {
+            // Oh boy, we have this schema already.
+            // It had better be identital.
+            if schema != preexisting {
+                return Err(McapError::ConflictingSchemas(header.name));
+            }
+        }
+        Ok(())
+    }
+
+    fn add_channel(&mut self, chan: records::Channel) -> McapResult<()> {
+        // The schema ID can be 0 for "no schema",
+        // Or must reference some previously-read schema.
+        let schema = if chan.schema_id == 0 {
+            None
+        } else {
+            match self.schemas.get(&chan.schema_id) {
+                Some(s) => Some(s.clone()),
+                None => {
+                    return Err(McapError::UnknownSchema(chan.topic, chan.schema_id));
+                }
+            }
+        };
+
+        let channel = Arc::new(Channel {
+            topic: chan.topic.clone(),
+            schema,
+            message_encoding: chan.message_encoding,
+            metadata: chan.metadata,
+        });
+        if let Some(preexisting) = self.channels.insert(chan.id, channel.clone()) {
+            // Oh boy, we have this channel already.
+            // It had better be identital.
+            if preexisting != channel {
+                return Err(McapError::ConflictingChannels(chan.topic));
+            }
+        }
+        Ok(())
+    }
+
+    fn get(&self, chan_id: u16) -> Option<Arc<Channel<'a>>> {
+        self.channels.get(&chan_id).cloned()
+    }
+}
+
 /// Read all messages from the MCAP file in the order they were written,
 /// and perform needed validation (CRC checks, etc.) as we go.
 ///
@@ -419,9 +483,7 @@ pub struct MessageStream<'a> {
     full_file: &'a [u8],
     records: ChunkFlattener<'a>,
     done: bool,
-
-    schemas: HashMap<u16, Arc<Schema<'a>>>,
-    channels: HashMap<u16, Arc<Channel<'a>>>,
+    channeler: ChannelAccumulator<'a>,
 }
 
 impl<'a> MessageStream<'a> {
@@ -433,8 +495,7 @@ impl<'a> MessageStream<'a> {
             full_file,
             records,
             done: false,
-            schemas: HashMap::new(),
-            channels: HashMap::new(),
+            channeler: ChannelAccumulator::default(),
         })
     }
 }
@@ -458,72 +519,22 @@ impl<'a> Iterator for MessageStream<'a> {
             match record {
                 // Insert schemas into self so we know when subsequent channels reference them.
                 Record::Schema { header, data } => {
-                    if header.id == 0 {
-                        break Some(Err(McapError::InvalidSchemaId));
-                    }
-
-                    if let Some(preexisting) = self.schemas.get(&header.id) {
-                        // Oh boy, we have this schema already.
-                        // It had better be identital.
-                        if header.name != preexisting.name
-                            || header.encoding != preexisting.encoding
-                            || data != preexisting.data
-                        {
-                            break Some(Err(McapError::ConflictingSchemas(header.name)));
-                        }
-                    } else {
-                        let schema = Arc::new(Schema {
-                            name: header.name,
-                            encoding: header.encoding,
-                            data,
-                        });
-                        assert!(self.schemas.insert(header.id, schema).is_none());
+                    if let Err(e) = self.channeler.add_schema(header, data) {
+                        break Some(Err(e));
                     }
                 }
 
                 // Insert channels into self so we know when subsequent messages reference them.
                 Record::Channel(chan) => {
-                    if let Some(preexisting) = self.channels.get(&chan.id) {
-                        // Oh boy, we have this channel already.
-                        // It had better be identital.
-                        if chan.topic != preexisting.topic
-                            || chan.message_encoding != preexisting.message_encoding
-                            || chan.metadata != preexisting.metadata
-                            || self.schemas.get(&chan.schema_id) != preexisting.schema.as_ref()
-                        {
-                            break Some(Err(McapError::ConflictingChannels(chan.topic)));
-                        }
-                    } else {
-                        // The schema ID can be 0 for "no schema",
-                        // Or must reference some previously-read schema.
-                        let schema = if chan.schema_id == 0 {
-                            None
-                        } else {
-                            match self.schemas.get(&chan.schema_id) {
-                                Some(s) => Some(s.clone()),
-                                None => {
-                                    break Some(Err(McapError::UnknownSchema(
-                                        chan.topic,
-                                        chan.schema_id,
-                                    )))
-                                }
-                            }
-                        };
-
-                        let channel = Arc::new(Channel {
-                            topic: chan.topic,
-                            schema,
-                            message_encoding: chan.message_encoding,
-                            metadata: chan.metadata,
-                        });
-                        assert!(self.channels.insert(chan.id, channel).is_none());
+                    if let Err(e) = self.channeler.add_channel(chan) {
+                        break Some(Err(e));
                     }
                 }
 
                 Record::Message { header, data } => {
                     // Messages must have a previously-read channel.
-                    let channel = match self.channels.get(&header.channel_id) {
-                        Some(c) => c.clone(),
+                    let channel = match self.channeler.get(header.channel_id) {
+                        Some(c) => c,
                         None => {
                             break Some(Err(McapError::UnknownChannel(
                                 header.sequence,
@@ -566,6 +577,70 @@ impl<'a> Iterator for MessageStream<'a> {
         }
         n
     }
+}
+
+#[derive(Debug, Default)]
+pub struct Summary<'a> {
+    pub channels: HashMap<u16, Arc<Channel<'a>>>,
+    pub schemas: HashMap<u16, Arc<Schema<'a>>>,
+    pub stats: Option<records::Statistics>,
+    // TODO: Chunk indexes
+}
+
+pub fn read_summary(mcap: &[u8]) -> McapResult<Option<Summary>> {
+    const FOOTER_LEN: usize = 20 + 8 + 1; // 20 bytes + 8 byte len + 1 byte opcode
+
+    if mcap.len() < MAGIC.len() * 2 + FOOTER_LEN {
+        return Err(McapError::UnexpectedEof);
+    }
+
+    if !mcap.starts_with(MAGIC) || !mcap.ends_with(MAGIC) {
+        return Err(McapError::BadMagic);
+    }
+
+    let footer_buf = &mcap[mcap.len() - MAGIC.len() - FOOTER_LEN..];
+
+    let footer = match LinearReader::sans_magic(footer_buf).next() {
+        Some(Ok(Record::Footer(f))) => f,
+        _ => return Err(McapError::BadFooter),
+    };
+
+    // A summary start offset of 0 means there's no summary.
+    if footer.summary_start == 0 {
+        return Ok(None);
+    }
+
+    if footer.summary_crc != 0 {
+        // The checksum covers the entire summary _except_ itself, including other footer bytes.
+        let check = crc32(&mcap[footer.summary_start as usize..mcap.len() - MAGIC.len() - 4]);
+        if footer.summary_crc != check {
+            return Err(McapError::BadSummaryCrc);
+        }
+    }
+
+    let mut summary = Summary::default();
+    let mut channeler = ChannelAccumulator::default();
+
+    let summary_buf = &mcap[footer.summary_start as usize..mcap.len() - MAGIC.len() - FOOTER_LEN];
+
+    for record in LinearReader::sans_magic(summary_buf) {
+        match record? {
+            Record::Statistics(s) => {
+                if summary.stats.is_some() {
+                    warn!("Multiple statistics records found in summary");
+                }
+                summary.stats = Some(s);
+            }
+            Record::Schema { header, data } => channeler.add_schema(header, data)?,
+            Record::Channel(c) => channeler.add_channel(c)?,
+            _chunk_indexes_and_other_fun_coming_soon => {}
+        };
+    }
+
+    summary.schemas = channeler.schemas;
+    summary.channels = channeler.channels;
+
+    Ok(Some(summary))
 }
 
 // All of the following panic if they walk off the back of the data block;

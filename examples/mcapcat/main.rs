@@ -69,6 +69,8 @@ fn run() -> Result<()> {
                 .join(" ")
         );
     }
+
+    println!("{:?}", mcap::read_summary(&mapped)?);
     Ok(())
 }
 
