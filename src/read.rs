@@ -177,7 +177,7 @@ fn read_record(op: u8, body: &[u8]) -> binrw::BinResult<records::Record<'_>> {
 
 enum ChunkDecompressor<'a> {
     Null(LinearReader<'a>),
-    Compressed(Option<CountingHashingReader<Box<dyn Read + 'a>>>),
+    Compressed(Option<CountingHashingReader<Box<dyn Read + Send + 'a>>>),
 }
 
 /// Streams records out of a [Chunk](Record::Chunk), decompressing as needed.
