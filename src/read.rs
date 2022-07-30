@@ -479,11 +479,18 @@ impl<'a> ChannelAccumulator<'a> {
 /// and perform needed validation (CRC checks, etc.) as we go.
 ///
 /// This stops at the end of the data section and does not read the summary.
+///
+/// Because tying the lifetime of each message to the underlying MCAP memory map
+/// makes it very difficult to send between threads or use in async land,
+/// and because we assume _most_ MCAP files have _most_ messages in compressed chunks,
+/// yielded [`Message`](crate::Message)s have unbounded lifetimes.
+/// For messages we've decompressed into their own buffers, this is free!
+/// For uncompressed messages, we take a copy of the message's data.
 pub struct MessageStream<'a> {
     full_file: &'a [u8],
     records: ChunkFlattener<'a>,
     done: bool,
-    channeler: ChannelAccumulator<'a>,
+    channeler: ChannelAccumulator<'static>,
 }
 
 impl<'a> MessageStream<'a> {
@@ -501,7 +508,7 @@ impl<'a> MessageStream<'a> {
 }
 
 impl<'a> Iterator for MessageStream<'a> {
-    type Item = McapResult<Message<'a>>;
+    type Item = McapResult<Message<'static>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.done {
@@ -519,6 +526,7 @@ impl<'a> Iterator for MessageStream<'a> {
             match record {
                 // Insert schemas into self so we know when subsequent channels reference them.
                 Record::Schema { header, data } => {
+                    let data = Cow::Owned(data.into_owned());
                     if let Err(e) = self.channeler.add_schema(header, data) {
                         break Some(Err(e));
                     }
@@ -548,7 +556,7 @@ impl<'a> Iterator for MessageStream<'a> {
                         sequence: header.sequence,
                         log_time: header.log_time,
                         publish_time: header.publish_time,
-                        data,
+                        data: Cow::Owned(data.into_owned()),
                     };
                     break Some(Ok(m));
                 }
