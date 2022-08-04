@@ -4,7 +4,7 @@ pub mod write;
 
 mod io_utils;
 
-use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
+use std::{borrow::Cow, collections::BTreeMap, fmt, sync::Arc};
 
 use thiserror::Error;
 
@@ -53,11 +53,20 @@ pub const MAGIC: &[u8] = &[0x89, b'M', b'C', b'A', b'P', 0x30, b'\r', b'\n'];
 ///
 /// The CoW can either borrow directly from the mapped file,
 /// or hold its own buffer if it was decompressed from a chunk.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Schema<'a> {
     pub name: String,
     pub encoding: String,
     pub data: Cow<'a, [u8]>,
+}
+
+impl fmt::Debug for Schema<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Schema")
+            .field("name", &self.name)
+            .field("encoding", &self.encoding)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Describes a channel which [Message]s are published to in an MCAP file

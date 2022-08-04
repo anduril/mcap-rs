@@ -70,7 +70,7 @@ fn run() -> Result<()> {
         );
     }
 
-    println!("{:?}", mcap::read_summary(&mapped)?);
+    info!("{:#?}", mcap::read_summary(&mapped)?);
     Ok(())
 }
 

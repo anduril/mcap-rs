@@ -2,7 +2,8 @@
 
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
+    fmt,
     io::{prelude::*, Cursor},
     sync::Arc,
 };
@@ -587,12 +588,27 @@ impl<'a> Iterator for MessageStream<'a> {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Summary<'a> {
     pub channels: HashMap<u16, Arc<Channel<'a>>>,
     pub schemas: HashMap<u16, Arc<Schema<'a>>>,
     pub stats: Option<records::Statistics>,
     // TODO: Chunk indexes
+}
+
+impl fmt::Debug for Summary<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Keep the actual maps as HashMaps for constant-time lookups,
+        // but order everything up before debug printing it here.
+        let channels = self.channels.iter().collect::<BTreeMap<_, _>>();
+        let schemas = self.schemas.iter().collect::<BTreeMap<_, _>>();
+
+        f.debug_struct("Summary")
+            .field("channels", &channels)
+            .field("schemas", &schemas)
+            .field("stats", &self.stats)
+            .finish()
+    }
 }
 
 pub fn read_summary(mcap: &[u8]) -> McapResult<Option<Summary>> {
