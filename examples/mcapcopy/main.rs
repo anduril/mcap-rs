@@ -1,6 +1,8 @@
 #[path = "../common/logsetup.rs"]
 mod logsetup;
 
+use std::{fs, io::BufWriter};
+
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Parser;
@@ -20,7 +22,7 @@ struct Args {
 }
 
 fn map_mcap(p: &Utf8Path) -> Result<Mmap> {
-    let fd = std::fs::File::open(p).context("Couldn't open MCAP file")?;
+    let fd = fs::File::open(p).context("Couldn't open MCAP file")?;
     unsafe { Mmap::map(&fd) }.context("Couldn't map MCAP file")
 }
 
@@ -30,8 +32,7 @@ fn run() -> Result<()> {
 
     let mapped = map_mcap(&args.mcap)?;
 
-    let mut out =
-        mcap::Writer::new(std::io::BufWriter::new(std::fs::File::create("out.mcap")?))?;
+    let mut out = mcap::Writer::new(BufWriter::new(fs::File::create("out.mcap")?))?;
 
     for message in mcap::MessageStream::new(&mapped)? {
         let message = message?;

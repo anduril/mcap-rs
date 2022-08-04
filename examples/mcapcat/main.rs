@@ -1,6 +1,8 @@
 #[path = "../common/logsetup.rs"]
 mod logsetup;
 
+use std::{fs, process};
+
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Parser;
@@ -20,7 +22,7 @@ struct Args {
 }
 
 fn map_mcap(p: &Utf8Path) -> Result<Mmap> {
-    let fd = std::fs::File::open(p).context("Couldn't open MCAP file")?;
+    let fd = fs::File::open(p).context("Couldn't open MCAP file")?;
     unsafe { Mmap::map(&fd) }.context("Couldn't map MCAP file")
 }
 
@@ -77,6 +79,6 @@ fn run() -> Result<()> {
 fn main() {
     run().unwrap_or_else(|e| {
         error!("{:?}", e);
-        std::process::exit(1);
+        process::exit(1);
     });
 }
