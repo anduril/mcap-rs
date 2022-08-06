@@ -12,7 +12,7 @@ use byteorder::{WriteBytesExt, LE};
 use crate::{
     io_utils::CountingCrcWriter,
     records::{self, MessageHeader, Record},
-    Channel, McapError, McapResult, Message, Schema, MAGIC,
+    Attachment, Channel, McapError, McapResult, Message, Schema, MAGIC,
 };
 
 enum WriteMode<W: Write + Seek> {
@@ -101,6 +101,7 @@ pub struct Writer<'a, W: Write + Seek> {
     channels: HashMap<Channel<'a>, u16>,
     stats: records::Statistics,
     chunk_indexes: Vec<records::ChunkIndex>,
+    attachment_indexes: Vec<records::AttachmentIndex>,
 }
 
 impl<'a, W: Write + Seek> Writer<'a, W> {
@@ -121,6 +122,7 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
             channels: HashMap::new(),
             stats: records::Statistics::default(),
             chunk_indexes: Vec::new(),
+            attachment_indexes: Vec::new(),
         })
     }
 
@@ -216,6 +218,44 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
         Ok(next_schema_id)
     }
 
+    pub fn attach(&mut self, attachment: &Attachment) -> McapResult<()> {
+        self.stats.attachment_count += 1;
+
+        let header = records::AttachmentHeader {
+            log_time: attachment.log_time,
+            create_time: attachment.create_time,
+            name: attachment.name.clone(),
+            content_type: attachment.content_type.clone(),
+            data_len: attachment.data.len() as u64,
+        };
+
+        // Attachments don't live in chunks.
+        let w = self.finish_chunk()?;
+
+        let offset = w.stream_position()?;
+
+        write_record(
+            w,
+            &Record::Attachment {
+                header,
+                data: &attachment.data,
+            },
+        )?;
+
+        let length = w.stream_position()? - offset;
+        self.attachment_indexes.push(records::AttachmentIndex {
+            offset,
+            length,
+            log_time: attachment.log_time,
+            create_time: attachment.create_time,
+            data_size: attachment.data.len() as u64,
+            name: attachment.name.clone(),
+            content_type: attachment.content_type.clone(),
+        });
+
+        Ok(())
+    }
+
     /// Starts a new chunk if we haven't done so already.
     fn chunkin_time(&mut self) -> McapResult<&mut ChunkWriter<W>> {
         // Some Rust tricky: we can't move the writer out of self.writer,
@@ -281,6 +321,9 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
 
         let mut chunk_indexes = Vec::new();
         std::mem::swap(&mut chunk_indexes, &mut self.chunk_indexes);
+
+        let mut attachment_indexes = Vec::new();
+        std::mem::swap(&mut attachment_indexes, &mut self.attachment_indexes);
 
         // Make some Schema and Channel lists for the summary section.
         // Be sure to grab schema IDs for the channels from the schema hash map before we drain it!
@@ -353,6 +396,10 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
         // Write all chunk indexes.
         for index in chunk_indexes {
             write_record(&mut summary_checksummer, &Record::ChunkIndex(index))?;
+        }
+        // and attachment indexes
+        for index in attachment_indexes {
+            write_record(&mut summary_checksummer, &Record::AttachmentIndex(index))?;
         }
 
         write_record(&mut summary_checksummer, &Record::Statistics(stats))?;

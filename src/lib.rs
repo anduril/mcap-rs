@@ -94,5 +94,15 @@ pub struct Message<'a> {
     pub data: Cow<'a, [u8]>,
 }
 
+/// An attachment and its metadata in an MCAP file
+#[derive(Debug)]
+pub struct Attachment<'a> {
+    pub log_time: u64,
+    pub create_time: u64,
+    pub name: String,
+    pub content_type: String,
+    pub data: Cow<'a, [u8]>,
+}
+
 pub use read::{read_summary, MessageStream};
 pub use write::Writer;
