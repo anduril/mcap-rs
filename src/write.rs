@@ -9,7 +9,7 @@ use std::{
 use binrw::prelude::*;
 
 use crate::{
-    io_utils::CountingHashingWriter,
+    io_utils::CountingCrcWriter,
     records::{self, Record},
     Channel, McapError, McapResult, Message, Schema, MAGIC,
 };
@@ -306,7 +306,7 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
         let summary_start = writer.stream_position()?;
 
         // Let's get a CRC of the summary section.
-        let mut summary_hasher = CountingHashingWriter::new(writer);
+        let mut summary_checksummer = CountingCrcWriter::new(writer);
 
         // Write all schemas.
         for (schema, id) in all_schemas {
@@ -318,7 +318,7 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
             };
             let data = schema.data;
 
-            write_record(&mut summary_hasher, &Record::Schema { header, data })?;
+            write_record(&mut summary_checksummer, &Record::Schema { header, data })?;
         }
         // Write all channels.
         for cs in all_channels {
@@ -329,24 +329,24 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
                 message_encoding: cs.channel.message_encoding,
                 metadata: cs.channel.metadata,
             };
-            write_record(&mut summary_hasher, &Record::Channel(rec))?;
+            write_record(&mut summary_checksummer, &Record::Channel(rec))?;
         }
 
         // Write all chunk indexes.
         for index in chunk_indexes {
-            write_record(&mut summary_hasher, &Record::ChunkIndex(index))?;
+            write_record(&mut summary_checksummer, &Record::ChunkIndex(index))?;
         }
 
-        write_record(&mut summary_hasher, &Record::Statistics(stats))?;
+        write_record(&mut summary_checksummer, &Record::Statistics(stats))?;
 
         // In an incredibly bizarre move, the CRC in the footer _includes_
         // part of the footer. All of the wat.
         use byteorder::{WriteBytesExt, LE};
-        op_and_len(&mut summary_hasher, 0x02, 20)?;
-        summary_hasher.write_u64::<LE>(summary_start)?;
-        summary_hasher.write_u64::<LE>(0)?; // Summary offsets not provided yet.
+        op_and_len(&mut summary_checksummer, 0x02, 20)?;
+        summary_checksummer.write_u64::<LE>(summary_start)?;
+        summary_checksummer.write_u64::<LE>(0)?; // Summary offsets not provided yet.
 
-        let (writer, summary_crc) = summary_hasher.finalize();
+        let (writer, summary_crc) = summary_checksummer.finalize();
 
         writer.write_u32::<LE>(summary_crc)?;
 
@@ -367,7 +367,7 @@ struct ChunkWriter<W: Write + Seek> {
     header_start: u64,
     stream_start: u64,
     header: records::ChunkHeader,
-    compressor: CountingHashingWriter<zstd::Encoder<'static, W>>,
+    compressor: CountingCrcWriter<zstd::Encoder<'static, W>>,
     indexes: BTreeMap<u16, Vec<records::MessageIndexEntry>>,
 }
 
@@ -390,7 +390,7 @@ impl<W: Write + Seek> ChunkWriter<W> {
 
         let mut compressor = zstd::Encoder::new(writer, 0)?; // TODO: Compression options
         compressor.multithread(num_cpus::get_physical() as u32)?;
-        let compressor = CountingHashingWriter::new(compressor);
+        let compressor = CountingCrcWriter::new(compressor);
         Ok(Self {
             compressor,
             header_start,

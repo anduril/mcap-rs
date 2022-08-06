@@ -13,7 +13,7 @@ use crc32fast::hash as crc32;
 use log::*;
 
 use crate::{
-    io_utils::CountingHashingReader,
+    io_utils::CountingCrcReader,
     records::{self, Record},
     Channel, McapError, McapResult, Message, Schema, MAGIC,
 };
@@ -178,7 +178,7 @@ fn read_record(op: u8, body: &[u8]) -> binrw::BinResult<records::Record<'_>> {
 
 enum ChunkDecompressor<'a> {
     Null(LinearReader<'a>),
-    Compressed(Option<CountingHashingReader<Box<dyn Read + Send + 'a>>>),
+    Compressed(Option<CountingCrcReader<Box<dyn Read + Send + 'a>>>),
 }
 
 /// Streams records out of a [Chunk](Record::Chunk), decompressing as needed.
@@ -190,10 +190,10 @@ pub struct ChunkReader<'a> {
 impl<'a> ChunkReader<'a> {
     pub fn new(header: records::ChunkHeader, data: &'a [u8]) -> McapResult<Self> {
         let decompressor = match header.compression.as_str() {
-            "zstd" => ChunkDecompressor::Compressed(Some(CountingHashingReader::new(Box::new(
+            "zstd" => ChunkDecompressor::Compressed(Some(CountingCrcReader::new(Box::new(
                 zstd::Decoder::new(data)?,
             )))),
-            "lz4" => ChunkDecompressor::Compressed(Some(CountingHashingReader::new(Box::new(
+            "lz4" => ChunkDecompressor::Compressed(Some(CountingCrcReader::new(Box::new(
                 lz4::Decoder::new(data)?,
             )))),
             "" => {

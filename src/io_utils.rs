@@ -3,13 +3,13 @@ use std::io::{self, prelude::*};
 use crc32fast::Hasher;
 
 /// Counts how many bytes have been read and calculates a running CRC32
-pub struct CountingHashingReader<R> {
+pub struct CountingCrcReader<R> {
     inner: R,
     hasher: Hasher,
     count: u64,
 }
 
-impl<R: Read> CountingHashingReader<R> {
+impl<R: Read> CountingCrcReader<R> {
     pub fn new(inner: R) -> Self {
         Self {
             inner,
@@ -28,7 +28,7 @@ impl<R: Read> CountingHashingReader<R> {
     }
 }
 
-impl<R: Read> Read for CountingHashingReader<R> {
+impl<R: Read> Read for CountingCrcReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let res = self.inner.read(buf)?;
         self.count += res as u64;
@@ -37,13 +37,13 @@ impl<R: Read> Read for CountingHashingReader<R> {
     }
 }
 
-pub struct CountingHashingWriter<W> {
+pub struct CountingCrcWriter<W> {
     inner: W,
     hasher: Hasher,
     count: u64,
 }
 
-impl<W: Write> CountingHashingWriter<W> {
+impl<W: Write> CountingCrcWriter<W> {
     pub fn new(inner: W) -> Self {
         Self {
             inner,
@@ -62,7 +62,7 @@ impl<W: Write> CountingHashingWriter<W> {
     }
 }
 
-impl<W: Write> Write for CountingHashingWriter<W> {
+impl<W: Write> Write for CountingCrcWriter<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let res = self.inner.write(buf)?;
         self.count += res as u64;
