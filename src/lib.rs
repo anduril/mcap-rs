@@ -10,14 +10,16 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum McapError {
+    #[error("Attachment CRC failed (expeted {saved:08X}, got {calculated:08X}")]
+    BadAttachmentCrc { saved: u32, calculated: u32 },
     #[error("Bad magic number")]
     BadMagic,
-    #[error("Chunk CRC failed")]
-    BadChunkCrc,
-    #[error("Data section CRC failed")]
-    BadDataCrc,
-    #[error("Summary section CRC failed")]
-    BadSummaryCrc,
+    #[error("Chunk CRC failed (expected {saved:08X}, got {calculated:08X}")]
+    BadChunkCrc { saved: u32, calculated: u32 },
+    #[error("Data section CRC failed (expected {saved:08X}, got {calculated:08X})")]
+    BadDataCrc { saved: u32, calculated: u32 },
+    #[error("Summary section CRC failed (expected {saved:08X}, got {calculated:08X})")]
+    BadSummaryCrc { saved: u32, calculated: u32 },
     #[error("Footer record couldn't be found at the end of the file, before the magic bytes")]
     BadFooter,
     #[error("Channel `{0}` has mulitple records that don't match.")]

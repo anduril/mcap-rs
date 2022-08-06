@@ -203,8 +203,14 @@ impl<'a> ChunkReader<'a> {
                     );
                 }
 
-                if header.uncompressed_crc != 0 && header.uncompressed_crc != crc32(data) {
-                    return Err(McapError::BadChunkCrc);
+                if header.uncompressed_crc != 0 {
+                    let calculated = crc32(data);
+                    if header.uncompressed_crc != calculated {
+                        return Err(McapError::BadChunkCrc {
+                            saved: header.uncompressed_crc,
+                            calculated,
+                        });
+                    }
                 }
 
                 ChunkDecompressor::Null(LinearReader::sans_magic(data))
@@ -245,14 +251,17 @@ impl<'a> Iterator for ChunkReader<'a> {
                 // If we've read all there is to read...
                 if s.position() >= self.header.uncompressed_size {
                     // Get the CRC.
-                    let calculated_crc = stream.take().unwrap().finalize();
+                    let calculated = stream.take().unwrap().finalize();
 
                     // If the header stored a CRC
                     // and it doesn't match what we have, complain.
                     if self.header.uncompressed_crc != 0
-                        && self.header.uncompressed_crc != calculated_crc
+                        && self.header.uncompressed_crc != calculated
                     {
-                        return Some(Err(McapError::BadChunkCrc));
+                        return Some(Err(McapError::BadChunkCrc {
+                            saved: self.header.uncompressed_crc,
+                            calculated,
+                        }));
                     }
                     // All good!
                 }
@@ -571,8 +580,12 @@ impl<'a> Iterator for MessageStream<'a> {
 
                         let data_section =
                             &self.full_file[MAGIC.len()..MAGIC.len() + data_section_len];
-                        if end.data_section_crc != crc32(data_section) {
-                            break Some(Err(McapError::BadDataCrc));
+                        let calculated = crc32(data_section);
+                        if end.data_section_crc != calculated {
+                            break Some(Err(McapError::BadDataCrc {
+                                saved: end.data_section_crc,
+                                calculated,
+                            }));
                         }
                     }
                     break None; // We're done at any rate.
@@ -636,9 +649,12 @@ pub fn read_summary(mcap: &[u8]) -> McapResult<Option<Summary>> {
 
     if footer.summary_crc != 0 {
         // The checksum covers the entire summary _except_ itself, including other footer bytes.
-        let check = crc32(&mcap[footer.summary_start as usize..mcap.len() - MAGIC.len() - 4]);
-        if footer.summary_crc != check {
-            return Err(McapError::BadSummaryCrc);
+        let calculated = crc32(&mcap[footer.summary_start as usize..mcap.len() - MAGIC.len() - 4]);
+        if footer.summary_crc != calculated {
+            return Err(McapError::BadSummaryCrc {
+                saved: footer.summary_crc,
+                calculated,
+            });
         }
     }
 
