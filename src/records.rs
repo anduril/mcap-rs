@@ -38,7 +38,6 @@ pub enum Record<'a> {
     Attachment {
         header: AttachmentHeader,
         data: &'a [u8],
-        crc: u32,
     },
     AttachmentIndex(AttachmentIndex),
     Statistics(Statistics),

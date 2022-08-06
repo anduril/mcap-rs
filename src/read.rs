@@ -21,7 +21,7 @@ use crate::{
 /// Scans a mapped MCAP file from start to end, returning each record.
 ///
 /// You probably want a [MessageStream] instead - this yields the raw records
-/// from the file without any postprocessing (CRC checks, decompressing chunks, etc.)
+/// from the file without any postprocessing (decompressing chunks, etc.)
 /// and is mostly meant as a building block for higher-level readers.
 pub struct LinearReader<'a> {
     buf: &'a [u8],
@@ -107,7 +107,7 @@ fn read_record_from_slice<'a>(buf: &mut &'a [u8]) -> McapResult<records::Record<
 }
 
 /// Given a record's opcode and its slice, read it into a [Record]
-fn read_record(op: u8, body: &[u8]) -> binrw::BinResult<records::Record<'_>> {
+fn read_record(op: u8, body: &[u8]) -> McapResult<records::Record<'_>> {
     macro_rules! record {
         ($b:ident) => {{
             let mut cur = Cursor::new($b);
@@ -156,12 +156,32 @@ fn read_record(op: u8, body: &[u8]) -> binrw::BinResult<records::Record<'_>> {
             let data = &body[c.position() as usize..body.len() - 4];
             if header.data_len != data.len() as u64 {
                 warn!(
-                    "Schema {}'s data length doesn't match the total schema length",
+                    "Attachment {}'s data length doesn't match the total schema length",
                     header.name
                 );
             }
             let crc = Cursor::new(&body[body.len() - 4..]).read_le()?;
-            Record::Attachment { header, data, crc }
+
+            // We usually leave CRCs to higher-level readers -
+            // (ChunkReader, read_summary(), etc.) - but
+            //
+            // 1. We can trivially check it here without checking other records,
+            //    decompressing anything, or doing any other non-trivial work
+            //
+            // 2. Since the CRC depends on the serialized header, it doesn't make
+            //    much sense to have users check it.
+            //    (What would they do? lol reserialize the header?)
+            if crc != 0 {
+                let calculated = crc32(&body[..body.len() - 4]);
+                if crc != calculated {
+                    return Err(McapError::BadAttachmentCrc {
+                        saved: crc,
+                        calculated,
+                    });
+                }
+            }
+
+            Record::Attachment { header, data }
         }
         0x0a => Record::AttachmentIndex(record!(body)),
         0x0b => Record::Statistics(record!(body)),

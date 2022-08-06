@@ -11,7 +11,7 @@ use byteorder::{WriteBytesExt, LE};
 
 use crate::{
     io_utils::CountingCrcWriter,
-    records::{self, Record, MessageHeader},
+    records::{self, MessageHeader, Record},
     Channel, McapError, McapResult, Message, Schema, MAGIC,
 };
 
@@ -65,7 +65,7 @@ fn write_record<W: Write>(w: &mut W, r: &Record) -> io::Result<()> {
             unreachable!("MessageIndexes handle their own serialization to recycle the buffer between indexes")
         }
         Record::ChunkIndex(c) => record!(0x08, c),
-        Record::Attachment { header, data, .. } => {
+        Record::Attachment { header, data } => {
             assert_eq!(header.data_len, data.len() as u64);
 
             // Can't use header_and_data since we need to checksum those,
