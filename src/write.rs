@@ -151,6 +151,24 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
         Ok(next_channel_id)
     }
 
+    fn add_schema(&mut self, schema: &Schema<'a>) -> McapResult<u16> {
+        if let Some(id) = self.schemas.get(schema) {
+            return Ok(*id);
+        }
+
+        // Schema IDs cannot be zero, that's the sentinel value in a channel
+        // for "no schema"
+        let next_schema_id = self.schemas.len() as u16 + 1;
+
+        self.stats.schema_count += 1;
+        assert!(self
+            .schemas
+            .insert(schema.clone(), next_schema_id)
+            .is_none());
+        self.chunkin_time()?.write_schema(next_schema_id, schema)?;
+        Ok(next_schema_id)
+    }
+
     /// Write the given message (and its provided channel, if needed).
     pub fn write(&mut self, message: &Message<'a>) -> McapResult<()> {
         let channel_id = self.add_channel(&message.channel)?;
@@ -198,24 +216,6 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
 
         self.chunkin_time()?.write_message(header, data)?;
         Ok(())
-    }
-
-    fn add_schema(&mut self, schema: &Schema<'a>) -> McapResult<u16> {
-        if let Some(id) = self.schemas.get(schema) {
-            return Ok(*id);
-        }
-
-        // Schema IDs cannot be zero, that's the sentinel value in a channel
-        // for "no schema"
-        let next_schema_id = self.schemas.len() as u16 + 1;
-
-        self.stats.schema_count += 1;
-        assert!(self
-            .schemas
-            .insert(schema.clone(), next_schema_id)
-            .is_none());
-        self.chunkin_time()?.write_schema(next_schema_id, schema)?;
-        Ok(next_schema_id)
     }
 
     pub fn attach(&mut self, attachment: &Attachment) -> McapResult<()> {
