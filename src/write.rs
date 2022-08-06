@@ -15,6 +15,8 @@ use crate::{
     Attachment, Channel, McapError, McapResult, Message, Schema, MAGIC,
 };
 
+pub use records::Metadata;
+
 enum WriteMode<W: Write + Seek> {
     Raw(W),
     Chunk(ChunkWriter<W>),
@@ -102,6 +104,7 @@ pub struct Writer<'a, W: Write + Seek> {
     stats: records::Statistics,
     chunk_indexes: Vec<records::ChunkIndex>,
     attachment_indexes: Vec<records::AttachmentIndex>,
+    metadata_indexes: Vec<records::MetadataIndex>,
 }
 
 impl<'a, W: Write + Seek> Writer<'a, W> {
@@ -123,6 +126,7 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
             stats: records::Statistics::default(),
             chunk_indexes: Vec::new(),
             attachment_indexes: Vec::new(),
+            metadata_indexes: Vec::new(),
         })
     }
 
@@ -256,6 +260,24 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
         Ok(())
     }
 
+    pub fn write_metadata(&mut self, metadata: &Metadata) -> McapResult<()> {
+        let w = self.finish_chunk()?;
+        let offset = w.stream_position()?;
+
+        // Should we specialize this to avoid taking a clone of the map?
+        write_record(w, &Record::Metadata(metadata.clone()))?;
+
+        let length = w.stream_position()? - offset;
+
+        self.metadata_indexes.push(records::MetadataIndex {
+            offset,
+            length,
+            name: metadata.name.clone(),
+        });
+
+        Ok(())
+    }
+
     /// Starts a new chunk if we haven't done so already.
     fn chunkin_time(&mut self) -> McapResult<&mut ChunkWriter<W>> {
         // Some Rust tricky: we can't move the writer out of self.writer,
@@ -324,6 +346,9 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
 
         let mut attachment_indexes = Vec::new();
         std::mem::swap(&mut attachment_indexes, &mut self.attachment_indexes);
+
+        let mut metadata_indexes = Vec::new();
+        std::mem::swap(&mut metadata_indexes, &mut self.metadata_indexes);
 
         // Make some Schema and Channel lists for the summary section.
         // Be sure to grab schema IDs for the channels from the schema hash map before we drain it!
@@ -397,9 +422,13 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
         for index in chunk_indexes {
             write_record(&mut summary_checksummer, &Record::ChunkIndex(index))?;
         }
-        // and attachment indexes
+        // ...and attachment indexes
         for index in attachment_indexes {
             write_record(&mut summary_checksummer, &Record::AttachmentIndex(index))?;
+        }
+        // ...and metadata indexes
+        for index in metadata_indexes {
+            write_record(&mut summary_checksummer, &Record::MetadataIndex(index))?;
         }
 
         write_record(&mut summary_checksummer, &Record::Statistics(stats))?;

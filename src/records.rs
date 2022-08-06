@@ -127,14 +127,14 @@ pub struct Header {
     pub library: String,
 }
 
-#[derive(Debug, BinRead, BinWrite, Default)]
+#[derive(Debug, Default, Clone, Copy, BinRead, BinWrite)]
 pub struct Footer {
     pub summary_start: u64,
     pub summary_offset_start: u64,
     pub summary_crc: u32,
 }
 
-#[derive(Debug, BinRead, BinWrite)]
+#[derive(Debug, Clone, BinRead, BinWrite)]
 pub struct SchemaHeader {
     pub id: u16,
 
@@ -251,7 +251,7 @@ where
     Ok(parsed)
 }
 
-#[derive(Debug, BinRead, BinWrite)]
+#[derive(Debug, Clone, BinRead, BinWrite)]
 pub struct Channel {
     pub id: u16,
     pub schema_id: u16,
@@ -289,7 +289,7 @@ pub struct MessageHeader {
     pub publish_time: u64,
 }
 
-#[derive(Debug, BinRead, BinWrite)]
+#[derive(Debug, Clone, BinRead, BinWrite)]
 pub struct ChunkHeader {
     pub message_start_time: u64,
 
@@ -306,14 +306,14 @@ pub struct ChunkHeader {
     pub compressed_size: u64,
 }
 
-#[derive(Debug, BinRead, BinWrite)]
+#[derive(Debug, Clone, Copy, BinRead, BinWrite)]
 pub struct MessageIndexEntry {
     pub log_time: u64,
 
     pub offset: u64,
 }
 
-#[derive(Debug, BinRead, BinWrite)]
+#[derive(Debug, Clone, BinRead, BinWrite)]
 pub struct MessageIndex {
     pub channel_id: u16,
 
@@ -322,7 +322,7 @@ pub struct MessageIndex {
     pub records: Vec<MessageIndexEntry>,
 }
 
-#[derive(Debug, BinRead, BinWrite)]
+#[derive(Debug, Clone, BinRead, BinWrite)]
 pub struct ChunkIndex {
     pub message_start_time: u64,
 
@@ -347,7 +347,7 @@ pub struct ChunkIndex {
     pub uncompressed_size: u64,
 }
 
-#[derive(Debug, BinRead, BinWrite)]
+#[derive(Debug, Clone, BinRead, BinWrite)]
 pub struct AttachmentHeader {
     pub log_time: u64,
 
@@ -364,7 +364,7 @@ pub struct AttachmentHeader {
     pub data_len: u64,
 }
 
-#[derive(Debug, BinRead, BinWrite)]
+#[derive(Debug, Clone, BinRead, BinWrite)]
 pub struct AttachmentIndex {
     pub offset: u64,
 
@@ -403,7 +403,7 @@ pub struct Statistics {
     pub channel_message_counts: BTreeMap<u16, u64>,
 }
 
-#[derive(Debug, BinRead, BinWrite)]
+#[derive(Debug, Clone, BinRead, BinWrite)]
 pub struct Metadata {
     #[br(map = |s: McapString| s.inner )]
     #[bw(write_with = write_string)]
@@ -414,7 +414,7 @@ pub struct Metadata {
     pub metadata: BTreeMap<String, String>,
 }
 
-#[derive(Debug, BinRead, BinWrite)]
+#[derive(Debug, Clone, BinRead, BinWrite)]
 pub struct MetadataIndex {
     pub offset: u64,
 
@@ -425,14 +425,14 @@ pub struct MetadataIndex {
     pub name: String,
 }
 
-#[derive(Debug, BinRead, BinWrite)]
+#[derive(Debug, Clone, Copy, BinRead, BinWrite)]
 pub struct SummaryOffset {
     pub group_opcode: u8,
     pub group_start: u64,
     pub group_length: u64,
 }
 
-#[derive(Debug, BinRead, BinWrite, Default)]
+#[derive(Debug, Default, Clone, Copy, BinRead, BinWrite)]
 pub struct EndOfData {
     pub data_section_crc: u32,
 }

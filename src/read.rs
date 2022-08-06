@@ -626,7 +626,7 @@ pub struct Summary<'a> {
     pub channels: HashMap<u16, Arc<Channel<'a>>>,
     pub schemas: HashMap<u16, Arc<Schema<'a>>>,
     pub stats: Option<records::Statistics>,
-    // TODO: Chunk indexes
+    // TODO: Chunk/attachment/metadata indexes
 }
 
 impl fmt::Debug for Summary<'_> {
