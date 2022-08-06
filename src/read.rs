@@ -623,10 +623,12 @@ impl<'a> Iterator for MessageStream<'a> {
 
 #[derive(Default)]
 pub struct Summary<'a> {
+    pub stats: Option<records::Statistics>,
     pub channels: HashMap<u16, Arc<Channel<'a>>>,
     pub schemas: HashMap<u16, Arc<Schema<'a>>>,
-    pub stats: Option<records::Statistics>,
-    // TODO: Chunk/attachment/metadata indexes
+    pub chunk_indexes: Vec<records::ChunkIndex>,
+    pub attachment_indexes: Vec<records::AttachmentIndex>,
+    pub metadata_indexes: Vec<records::MetadataIndex>,
 }
 
 impl fmt::Debug for Summary<'_> {
@@ -637,9 +639,12 @@ impl fmt::Debug for Summary<'_> {
         let schemas = self.schemas.iter().collect::<BTreeMap<_, _>>();
 
         f.debug_struct("Summary")
+            .field("stats", &self.stats)
             .field("channels", &channels)
             .field("schemas", &schemas)
-            .field("stats", &self.stats)
+            .field("chunk_indexes", &self.chunk_indexes)
+            .field("attachment_indexes", &self.attachment_indexes)
+            .field("metadata_indexes", &self.metadata_indexes)
             .finish()
     }
 }
@@ -693,7 +698,10 @@ pub fn read_summary(mcap: &[u8]) -> McapResult<Option<Summary>> {
             }
             Record::Schema { header, data } => channeler.add_schema(header, data)?,
             Record::Channel(c) => channeler.add_channel(c)?,
-            _chunk_indexes_and_other_fun_coming_soon => {}
+            Record::ChunkIndex(c) => summary.chunk_indexes.push(c),
+            Record::AttachmentIndex(a) => summary.attachment_indexes.push(a),
+            Record::MetadataIndex(i) => summary.metadata_indexes.push(i),
+            _ => {}
         };
     }
 
