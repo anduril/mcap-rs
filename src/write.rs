@@ -7,14 +7,13 @@ use std::{
 };
 
 use binrw::prelude::*;
+use byteorder::{WriteBytesExt, LE};
 
 use crate::{
     io_utils::CountingCrcWriter,
-    records::{self, Record},
+    records::{self, Record, MessageHeader},
     Channel, McapError, McapResult, Message, Schema, MAGIC,
 };
-
-pub use records::MessageHeader;
 
 enum WriteMode<W: Write + Seek> {
     Raw(W),
@@ -22,14 +21,14 @@ enum WriteMode<W: Write + Seek> {
 }
 
 fn op_and_len<W: Write>(w: &mut W, op: u8, len: usize) -> io::Result<()> {
-    use byteorder::{WriteBytesExt, LE};
     w.write_u8(op)?;
     w.write_u64::<LE>(len as u64)?;
     Ok(())
 }
 
 fn write_record<W: Write>(w: &mut W, r: &Record) -> io::Result<()> {
-    // Annoying: our stream isn't Seek, so we need an intermediate buffer.
+    // Annoying: our stream isn't Seek if we're writing to a compressed chunk stream,
+    // so we need an intermediate buffer.
     macro_rules! record {
         ($op:literal, $b:ident) => {{
             let mut rec_buf = Vec::new();
@@ -66,7 +65,26 @@ fn write_record<W: Write>(w: &mut W, r: &Record) -> io::Result<()> {
             unreachable!("MessageIndexes handle their own serialization to recycle the buffer between indexes")
         }
         Record::ChunkIndex(c) => record!(0x08, c),
+        Record::Attachment { header, data, .. } => {
+            assert_eq!(header.data_len, data.len() as u64);
+
+            // Can't use header_and_data since we need to checksum those,
+            // but not the op and len
+            let mut header_buf = Vec::new();
+            Cursor::new(&mut header_buf).write_le(header).unwrap();
+            op_and_len(w, 0x09, header_buf.len() + data.len() + 4)?; // 4 for crc
+
+            let mut checksummer = CountingCrcWriter::new(w);
+            checksummer.write_all(&header_buf)?;
+            checksummer.write_all(data)?;
+            let (w, crc) = checksummer.finalize();
+            w.write_u32::<LE>(crc)?;
+        }
+        Record::AttachmentIndex(ai) => record!(0x0A, ai),
         Record::Statistics(s) => record!(0x0B, s),
+        Record::Metadata(m) => record!(0x0C, m),
+        Record::MetadataIndex(mi) => record!(0x0D, mi),
+        Record::SummaryOffset(so) => record!(0x0E, so),
         Record::EndOfData(eod) => record!(0x0F, eod),
         _ => todo!(),
     };
@@ -341,7 +359,6 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
 
         // In an incredibly bizarre move, the CRC in the footer _includes_
         // part of the footer. All of the wat.
-        use byteorder::{WriteBytesExt, LE};
         op_and_len(&mut summary_checksummer, 0x02, 20)?;
         summary_checksummer.write_u64::<LE>(summary_start)?;
         summary_checksummer.write_u64::<LE>(0)?; // Summary offsets not provided yet.
