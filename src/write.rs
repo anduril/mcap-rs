@@ -143,9 +143,9 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
             return Ok(*id);
         }
 
-        let next_channel_id = self.channels.len() as u16;
-
         self.stats.channel_count += 1;
+
+        let next_channel_id = self.channels.len() as u16;
         assert!(self
             .channels
             .insert(chan.clone(), next_channel_id)
@@ -160,11 +160,11 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
             return Ok(*id);
         }
 
+        self.stats.schema_count += 1;
+
         // Schema IDs cannot be zero, that's the sentinel value in a channel
         // for "no schema"
         let next_schema_id = self.schemas.len() as u16 + 1;
-
-        self.stats.schema_count += 1;
         assert!(self
             .schemas
             .insert(schema.clone(), next_schema_id)
@@ -261,6 +261,8 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
     }
 
     pub fn write_metadata(&mut self, metadata: &Metadata) -> McapResult<()> {
+        self.stats.metadata_count += 1;
+
         let w = self.finish_chunk()?;
         let offset = w.stream_position()?;
 
