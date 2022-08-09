@@ -26,3 +26,4 @@ camino = "1.0"
 clap = { version = "3.2", features = ["derive"]}
 memmap = "0.7"
 simplelog = "0.12"
+tempfile = "3.3"

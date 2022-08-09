@@ -10,18 +10,20 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum McapError {
-    #[error("Attachment CRC failed (expeted {saved:08X}, got {calculated:08X}")]
-    BadAttachmentCrc { saved: u32, calculated: u32 },
     #[error("Bad magic number")]
     BadMagic,
+    #[error("Footer record couldn't be found at the end of the file, before the magic bytes")]
+    BadFooter,
+    #[error("Attachment CRC failed (expeted {saved:08X}, got {calculated:08X}")]
+    BadAttachmentCrc { saved: u32, calculated: u32 },
     #[error("Chunk CRC failed (expected {saved:08X}, got {calculated:08X}")]
     BadChunkCrc { saved: u32, calculated: u32 },
     #[error("Data section CRC failed (expected {saved:08X}, got {calculated:08X})")]
     BadDataCrc { saved: u32, calculated: u32 },
     #[error("Summary section CRC failed (expected {saved:08X}, got {calculated:08X})")]
     BadSummaryCrc { saved: u32, calculated: u32 },
-    #[error("Footer record couldn't be found at the end of the file, before the magic bytes")]
-    BadFooter,
+    #[error("Index offset and length didn't point to the expected record type")]
+    BadIndex,
     #[error("Channel `{0}` has mulitple records that don't match.")]
     ConflictingChannels(String),
     #[error("Schema `{0}` has mulitple records that don't match.")]
@@ -85,7 +87,7 @@ pub struct Channel<'a> {
 ///
 /// The CoW can either borrow directly from the mapped file,
 /// or hold its own buffer if it was decompressed from a chunk.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message<'a> {
     pub channel: Arc<Channel<'a>>,
     pub sequence: u32,
@@ -95,7 +97,7 @@ pub struct Message<'a> {
 }
 
 /// An attachment and its metadata in an MCAP file
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Attachment<'a> {
     pub log_time: u64,
     pub create_time: u64,
@@ -104,5 +106,5 @@ pub struct Attachment<'a> {
     pub data: Cow<'a, [u8]>,
 }
 
-pub use read::{read_summary, MessageStream};
+pub use read::{MessageStream, Summary};
 pub use write::Writer;

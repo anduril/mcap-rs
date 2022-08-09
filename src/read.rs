@@ -15,7 +15,7 @@ use log::*;
 use crate::{
     io_utils::CountingCrcReader,
     records::{self, Record},
-    Channel, McapError, McapResult, Message, Schema, MAGIC,
+    Attachment, Channel, McapError, McapResult, Message, Schema, MAGIC,
 };
 
 /// Scans a mapped MCAP file from start to end, returning each record.
@@ -621,7 +621,7 @@ impl<'a> Iterator for MessageStream<'a> {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Eq, PartialEq)]
 pub struct Summary<'a> {
     pub stats: Option<records::Statistics>,
     pub channels: HashMap<u16, Arc<Channel<'a>>>,
@@ -649,66 +649,121 @@ impl fmt::Debug for Summary<'_> {
     }
 }
 
-pub fn read_summary(mcap: &[u8]) -> McapResult<Option<Summary>> {
-    const FOOTER_LEN: usize = 20 + 8 + 1; // 20 bytes + 8 byte len + 1 byte opcode
+impl<'a> Summary<'a> {
+    pub fn read(mcap: &'a [u8]) -> McapResult<Option<Self>> {
+        const FOOTER_LEN: usize = 20 + 8 + 1; // 20 bytes + 8 byte len + 1 byte opcode
 
-    if mcap.len() < MAGIC.len() * 2 + FOOTER_LEN {
-        return Err(McapError::UnexpectedEof);
+        if mcap.len() < MAGIC.len() * 2 + FOOTER_LEN {
+            return Err(McapError::UnexpectedEof);
+        }
+
+        if !mcap.starts_with(MAGIC) || !mcap.ends_with(MAGIC) {
+            return Err(McapError::BadMagic);
+        }
+
+        let footer_buf = &mcap[mcap.len() - MAGIC.len() - FOOTER_LEN..];
+
+        let footer = match LinearReader::sans_magic(footer_buf).next() {
+            Some(Ok(Record::Footer(f))) => f,
+            _ => return Err(McapError::BadFooter),
+        };
+
+        // A summary start offset of 0 means there's no summary.
+        if footer.summary_start == 0 {
+            return Ok(None);
+        }
+
+        if footer.summary_crc != 0 {
+            // The checksum covers the entire summary _except_ itself, including other footer bytes.
+            let calculated =
+                crc32(&mcap[footer.summary_start as usize..mcap.len() - MAGIC.len() - 4]);
+            if footer.summary_crc != calculated {
+                return Err(McapError::BadSummaryCrc {
+                    saved: footer.summary_crc,
+                    calculated,
+                });
+            }
+        }
+
+        let mut summary = Summary::default();
+        let mut channeler = ChannelAccumulator::default();
+
+        let summary_buf =
+            &mcap[footer.summary_start as usize..mcap.len() - MAGIC.len() - FOOTER_LEN];
+
+        for record in LinearReader::sans_magic(summary_buf) {
+            match record? {
+                Record::Statistics(s) => {
+                    if summary.stats.is_some() {
+                        warn!("Multiple statistics records found in summary");
+                    }
+                    summary.stats = Some(s);
+                }
+                Record::Schema { header, data } => channeler.add_schema(header, data)?,
+                Record::Channel(c) => channeler.add_channel(c)?,
+                Record::ChunkIndex(c) => summary.chunk_indexes.push(c),
+                Record::AttachmentIndex(a) => summary.attachment_indexes.push(a),
+                Record::MetadataIndex(i) => summary.metadata_indexes.push(i),
+                _ => {}
+            };
+        }
+
+        summary.schemas = channeler.schemas;
+        summary.channels = channeler.channels;
+
+        Ok(Some(summary))
+    }
+}
+
+pub fn attachment<'a>(
+    mcap: &'a [u8],
+    index: &records::AttachmentIndex,
+) -> McapResult<Attachment<'a>> {
+    let end = (index.offset + index.length) as usize;
+    if mcap.len() < end {
+        return Err(McapError::BadIndex);
     }
 
-    if !mcap.starts_with(MAGIC) || !mcap.ends_with(MAGIC) {
-        return Err(McapError::BadMagic);
-    }
-
-    let footer_buf = &mcap[mcap.len() - MAGIC.len() - FOOTER_LEN..];
-
-    let footer = match LinearReader::sans_magic(footer_buf).next() {
-        Some(Ok(Record::Footer(f))) => f,
-        _ => return Err(McapError::BadFooter),
+    let mut reader = LinearReader::sans_magic(&mcap[index.offset as usize..end]);
+    let (h, d) = match reader.next().ok_or(McapError::BadIndex)? {
+        Ok(records::Record::Attachment { header, data }) => (header, data),
+        Ok(_other_record) => return Err(McapError::BadIndex),
+        Err(e) => return Err(e),
     };
 
-    // A summary start offset of 0 means there's no summary.
-    if footer.summary_start == 0 {
-        return Ok(None);
+    if reader.next().is_some() {
+        // Wut - multiple records in the given slice?
+        return Err(McapError::BadIndex);
     }
 
-    if footer.summary_crc != 0 {
-        // The checksum covers the entire summary _except_ itself, including other footer bytes.
-        let calculated = crc32(&mcap[footer.summary_start as usize..mcap.len() - MAGIC.len() - 4]);
-        if footer.summary_crc != calculated {
-            return Err(McapError::BadSummaryCrc {
-                saved: footer.summary_crc,
-                calculated,
-            });
-        }
+    Ok(Attachment {
+        log_time: h.log_time,
+        create_time: h.create_time,
+        name: h.name,
+        content_type: h.content_type,
+        data: Cow::Borrowed(d),
+    })
+}
+
+pub fn metadata(mcap: &[u8], index: &records::MetadataIndex) -> McapResult<records::Metadata> {
+    let end = (index.offset + index.length) as usize;
+    if mcap.len() < end {
+        return Err(McapError::BadIndex);
     }
 
-    let mut summary = Summary::default();
-    let mut channeler = ChannelAccumulator::default();
+    let mut reader = LinearReader::sans_magic(&mcap[index.offset as usize..end]);
+    let m = match reader.next().ok_or(McapError::BadIndex)? {
+        Ok(records::Record::Metadata(m)) => m,
+        Ok(_other_record) => return Err(McapError::BadIndex),
+        Err(e) => return Err(e),
+    };
 
-    let summary_buf = &mcap[footer.summary_start as usize..mcap.len() - MAGIC.len() - FOOTER_LEN];
-
-    for record in LinearReader::sans_magic(summary_buf) {
-        match record? {
-            Record::Statistics(s) => {
-                if summary.stats.is_some() {
-                    warn!("Multiple statistics records found in summary");
-                }
-                summary.stats = Some(s);
-            }
-            Record::Schema { header, data } => channeler.add_schema(header, data)?,
-            Record::Channel(c) => channeler.add_channel(c)?,
-            Record::ChunkIndex(c) => summary.chunk_indexes.push(c),
-            Record::AttachmentIndex(a) => summary.attachment_indexes.push(a),
-            Record::MetadataIndex(i) => summary.metadata_indexes.push(i),
-            _ => {}
-        };
+    if reader.next().is_some() {
+        // Wut - multiple records in the given slice?
+        return Err(McapError::BadIndex);
     }
 
-    summary.schemas = channeler.schemas;
-    summary.channels = channeler.channels;
-
-    Ok(Some(summary))
+    Ok(m)
 }
 
 // All of the following panic if they walk off the back of the data block;
