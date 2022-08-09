@@ -4,7 +4,7 @@ use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap},
     fmt,
-    io::{prelude::*, Cursor},
+    io::{self, prelude::*, Cursor},
     sync::Arc,
 };
 
@@ -775,12 +775,12 @@ impl<'a> Summary<'a> {
         Ok(messages)
     }
 
-    /// Read the mesage indexes for the chunk with the given chunk out of the MCAP map.
+    /// Read the mesage indexes for the given indexed chunk out of the MCAP map.
     ///
     /// Channels and their schemas are pulled from this summary.
     /// The offsets in each message index entry is relative to the decompressed
     /// contents of the given chunk.
-    pub fn message_indexes(
+    pub fn read_message_indexes(
         &self,
         mcap: &[u8],
         index: &records::ChunkIndex,
@@ -830,6 +830,93 @@ impl<'a> Summary<'a> {
         }
 
         Ok(indexes)
+    }
+
+    /// Seek to the given message in the given indexed chunk.
+    ///
+    /// If you're interested in more than a single message from the chunk,
+    /// [`Summary::stream_chunk`] is probably a better bet.
+    /// Compressed chunks aren't random access -
+    /// this decompresses everything before
+    /// [`message.offset`](records::MessageIndexEntry::offset) and throws it away.
+    pub fn seek_message(
+        &self,
+        mcap: &'a [u8],
+        index: &records::ChunkIndex,
+        message: &records::MessageIndexEntry,
+    ) -> McapResult<Message> {
+        // Get the chunk (as a header and its data) out of the file at the given offset.
+        let end = (index.chunk_start_offset + index.chunk_length) as usize;
+        if mcap.len() < end {
+            return Err(McapError::BadIndex);
+        }
+
+        let mut reader = LinearReader::sans_magic(&mcap[index.chunk_start_offset as usize..end]);
+        let (h, d) = match reader.next().ok_or(McapError::BadIndex)? {
+            Ok(records::Record::Chunk { header, data }) => (header, data),
+            Ok(_other_record) => return Err(McapError::BadIndex),
+            Err(e) => return Err(e),
+        };
+
+        if reader.next().is_some() {
+            // Wut - multiple records in the given slice?
+            return Err(McapError::BadIndex);
+        }
+
+        let mut chunk_reader = ChunkReader::new(h, d)?;
+
+        // Do unspeakable things to seek to the message.
+        match &mut chunk_reader.decompressor {
+            ChunkDecompressor::Null(reader) => {
+                // Skip messages until we're at the offset.
+                while reader.bytes_remaining() as u64 > index.uncompressed_size - message.offset {
+                    match reader.next() {
+                        Some(Ok(_)) => {}
+                        Some(Err(e)) => return Err(e),
+                        None => return Err(McapError::BadIndex),
+                    };
+                }
+                // Be exact!
+                if reader.bytes_remaining() as u64 != index.uncompressed_size - message.offset {
+                    return Err(McapError::BadIndex);
+                }
+            }
+            ChunkDecompressor::Compressed(maybe_read) => {
+                let reader = maybe_read.as_mut().unwrap();
+                // Decompress offset bytes, which should put us at the message we want.
+                io::copy(&mut reader.take(message.offset), &mut io::sink())?;
+            }
+        }
+
+        // Now let's get our message.
+        match chunk_reader.next() {
+            Some(Ok(records::Record::Message { header, data })) => {
+                // Correlate the message to its channel from this summary.
+                let channel = match self.channels.get(&header.channel_id) {
+                    Some(c) => c.clone(),
+                    None => {
+                        return Err(McapError::UnknownChannel(
+                            header.sequence,
+                            header.channel_id,
+                        ));
+                    }
+                };
+
+                let m = Message {
+                    channel,
+                    sequence: header.sequence,
+                    log_time: header.log_time,
+                    publish_time: header.publish_time,
+                    data,
+                };
+
+                Ok(m)
+            }
+            // The index told us this was a message...
+            Some(Ok(_other_record)) => Err(McapError::BadIndex),
+            Some(Err(e)) => Err(e),
+            None => Err(McapError::BadIndex),
+        }
     }
 }
 

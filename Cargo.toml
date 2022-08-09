@@ -24,6 +24,7 @@ anyhow = "1.0"
 atty = "0.2"
 camino = "1.0"
 clap = { version = "3.2", features = ["derive"]}
+itertools = "0.10"
 memmap = "0.7"
 simplelog = "0.12"
 tempfile = "3.3"

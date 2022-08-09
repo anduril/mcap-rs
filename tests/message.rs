@@ -5,6 +5,7 @@ use common::*;
 use std::{borrow::Cow, io::BufWriter, sync::Arc};
 
 use anyhow::Result;
+use itertools::Itertools;
 use memmap::Mmap;
 use tempfile::tempfile;
 
@@ -108,7 +109,7 @@ fn round_trip() -> Result<()> {
 }
 
 #[test]
-fn demo() -> Result<()> {
+fn demo_round_trip() -> Result<()> {
     let mapped = map_mcap("tests/references/demo.mcap")?;
 
     let messages = mcap::MessageStream::new(&mapped)?;
@@ -125,8 +126,64 @@ fn demo() -> Result<()> {
     drop(writer);
 
     let ours = unsafe { Mmap::map(&tmp) }?;
-    for (theirs, ours) in mcap::MessageStream::new(&mapped)?.zip(mcap::MessageStream::new(&ours)?) {
+    for (theirs, ours) in
+        mcap::MessageStream::new(&mapped)?.zip_eq(mcap::MessageStream::new(&ours)?)
+    {
         assert_eq!(ours?, theirs?)
+    }
+
+    Ok(())
+}
+
+#[test]
+fn demo_random_chunk_access() -> Result<()> {
+    let mapped = map_mcap("tests/references/demo.mcap")?;
+
+    let summary = mcap::Summary::read(&mapped)?.unwrap();
+
+    // Random access of the second chunk should match the stream of the whole file.
+    let messages_in_first_chunk: usize = summary
+        .read_message_indexes(&mapped, &summary.chunk_indexes[0])?
+        .values()
+        .map(|entries| entries.len())
+        .sum();
+    let messages_in_second_chunk: usize = summary
+        .read_message_indexes(&mapped, &summary.chunk_indexes[1])?
+        .values()
+        .map(|entries| entries.len())
+        .sum();
+    eprintln!("{messages_in_second_chunk}");
+    eprintln!(
+        "{}",
+        summary
+            .stream_chunk(&mapped, &summary.chunk_indexes[1])?
+            .count()
+    );
+    for (whole, random) in mcap::MessageStream::new(&mapped)?
+        .skip(messages_in_first_chunk)
+        .take(messages_in_second_chunk)
+        .zip_eq(summary.stream_chunk(&mapped, &summary.chunk_indexes[1])?)
+    {
+        assert_eq!(whole?, random?);
+    }
+
+    // Let's poke around the message indexes
+    let mut index_entries = summary
+        .read_message_indexes(&mapped, &summary.chunk_indexes[1])?
+        .values()
+        .flatten()
+        .copied()
+        .collect::<Vec<mcap::records::MessageIndexEntry>>();
+
+    index_entries.sort_unstable_by_key(|e| e.offset);
+
+    // Do a big dumb N^2 seek of each message (dear god, don't ever actually do this)
+    for (entry, message) in index_entries
+        .iter()
+        .zip_eq(summary.stream_chunk(&mapped, &summary.chunk_indexes[1])?)
+    {
+        let seeked = summary.seek_message(&mapped, &summary.chunk_indexes[1], entry)?;
+        assert_eq!(seeked, message?);
     }
 
     Ok(())
