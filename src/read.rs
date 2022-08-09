@@ -717,7 +717,7 @@ impl<'a> Summary<'a> {
     /// Stream messages from the chunk with the given index.
     ///
     /// To avoid having to read all preceding chunks first,
-    /// channels and schemas are pulled from this summary.
+    /// channels and their schemas are pulled from this summary.
     pub fn stream_chunk(
         &self,
         mcap: &'a [u8],
@@ -773,6 +773,63 @@ impl<'a> Summary<'a> {
         });
 
         Ok(messages)
+    }
+
+    /// Read the mesage indexes for the chunk with the given chunk out of the MCAP map.
+    ///
+    /// Channels and their schemas are pulled from this summary.
+    /// The offsets in each message index entry is relative to the decompressed
+    /// contents of the given chunk.
+    pub fn message_indexes(
+        &self,
+        mcap: &[u8],
+        index: &records::ChunkIndex,
+    ) -> McapResult<HashMap<Arc<Channel>, Vec<records::MessageIndexEntry>>> {
+        if index.message_index_offsets.is_empty() {
+            // Message indexing is optional... should we be more descriptive here?
+            return Err(McapError::BadIndex);
+        }
+
+        let mut indexes = HashMap::new();
+
+        for (channel_id, offset) in &index.message_index_offsets {
+            let offset = *offset as usize;
+
+            // Message indexes are at least 15 bytes:
+            // 1 byte opcode, 8 byte length, 2 byte channel ID, 4 byte array len
+            if mcap.len() < offset + 15 {
+                return Err(McapError::BadIndex);
+            }
+
+            // Get the MessageIndex out of the file at the given offset.
+            let mut reader = LinearReader::sans_magic(&mcap[offset..]);
+            let index = match reader.next().ok_or(McapError::BadIndex)? {
+                Ok(records::Record::MessageIndex(i)) => i,
+                Ok(_other_record) => return Err(McapError::BadIndex),
+                Err(e) => return Err(e),
+            };
+
+            // The channel ID from the chunk index and the message index should match
+            if *channel_id != index.channel_id {
+                return Err(McapError::BadIndex);
+            }
+
+            let channel = match self.channels.get(&index.channel_id) {
+                Some(c) => c,
+                None => {
+                    return Err(McapError::UnknownChannel(
+                        0, // We don't have a message sequence num yet.
+                        index.channel_id,
+                    ));
+                }
+            };
+
+            if indexes.insert(channel.clone(), index.records).is_some() {
+                return Err(McapError::ConflictingChannels(channel.topic.clone()));
+            }
+        }
+
+        Ok(indexes)
     }
 }
 
