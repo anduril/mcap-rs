@@ -713,8 +713,70 @@ impl<'a> Summary<'a> {
 
         Ok(Some(summary))
     }
+
+    /// Stream messages from the chunk with the given index.
+    ///
+    /// To avoid having to read all preceding chunks first,
+    /// channels and schemas are pulled from this summary.
+    pub fn stream_chunk(
+        &self,
+        mcap: &'a [u8],
+        index: &records::ChunkIndex,
+    ) -> McapResult<impl Iterator<Item = McapResult<Message<'a>>> + '_> {
+        let end = (index.chunk_start_offset + index.chunk_length) as usize;
+        if mcap.len() < end {
+            return Err(McapError::BadIndex);
+        }
+
+        // Get the chunk (as a header and its data) out of the file at the given offset.
+        let mut reader = LinearReader::sans_magic(&mcap[index.chunk_start_offset as usize..end]);
+        let (h, d) = match reader.next().ok_or(McapError::BadIndex)? {
+            Ok(records::Record::Chunk { header, data }) => (header, data),
+            Ok(_other_record) => return Err(McapError::BadIndex),
+            Err(e) => return Err(e),
+        };
+
+        if reader.next().is_some() {
+            // Wut - multiple records in the given slice?
+            return Err(McapError::BadIndex);
+        }
+
+        // Now let's stream messages out of the chunk.
+        let messages = ChunkReader::new(h, d)?.filter_map(|record| match record {
+            Ok(records::Record::Message { header, data }) => {
+                // Correlate the message to its channel from this summary.
+                let channel = match self.channels.get(&header.channel_id) {
+                    Some(c) => c.clone(),
+                    None => {
+                        return Some(Err(McapError::UnknownChannel(
+                            header.sequence,
+                            header.channel_id,
+                        )));
+                    }
+                };
+
+                let m = Message {
+                    channel,
+                    sequence: header.sequence,
+                    log_time: header.log_time,
+                    publish_time: header.publish_time,
+                    data,
+                };
+
+                Some(Ok(m))
+            }
+            // We don't care about other chunk records (channels, schemas) -
+            // we should have them from &self already.
+            Ok(_other_record) => None,
+            // We do care about errors, though.
+            Err(e) => Some(Err(e)),
+        });
+
+        Ok(messages)
+    }
 }
 
+/// Read the attachment with the given index out of the MCAP map
 pub fn attachment<'a>(
     mcap: &'a [u8],
     index: &records::AttachmentIndex,
@@ -745,6 +807,7 @@ pub fn attachment<'a>(
     })
 }
 
+/// Read the metadata with the given index out of the MCAP map
 pub fn metadata(mcap: &[u8], index: &records::MetadataIndex) -> McapResult<records::Metadata> {
     let end = (index.offset + index.length) as usize;
     if mcap.len() < end {
