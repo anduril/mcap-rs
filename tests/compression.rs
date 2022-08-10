@@ -2,7 +2,7 @@ mod common;
 
 use common::*;
 
-use std::{io::BufWriter};
+use std::io::BufWriter;
 
 use anyhow::Result;
 use itertools::Itertools;
@@ -52,4 +52,3 @@ fn zstd_round_trip() -> Result<()> {
 fn lz4_round_trip() -> Result<()> {
     round_trip(Some(mcap::Compression::Lz4))
 }
-

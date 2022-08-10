@@ -30,7 +30,7 @@ pub struct LinearReader<'a> {
 
 impl<'a> LinearReader<'a> {
     pub fn new(buf: &'a [u8]) -> McapResult<Self> {
-        if !buf.starts_with(MAGIC) || !buf.ends_with(MAGIC) {
+        if buf.len() < MAGIC.len() * 2 || !buf.starts_with(MAGIC) || !buf.ends_with(MAGIC) {
             return Err(McapError::BadMagic);
         }
         let buf = &buf[MAGIC.len()..buf.len() - MAGIC.len()];
@@ -1001,3 +1001,26 @@ macro_rules! reader {
 
 reader!(u8);
 reader!(u64);
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    // Can we read a file that's only magic?
+    // (Probably considered malformed by the spec, but let's not panic on user input)
+
+    #[test]
+    fn only_two_magics() {
+        let two_magics = MAGIC.repeat(2);
+        let mut reader = LinearReader::new(&two_magics).unwrap();
+        assert!(reader.next().is_none());
+    }
+
+    #[test]
+    fn only_one_magic() {
+        assert!(matches!(
+            LinearReader::new(&MAGIC),
+            Err(McapError::BadMagic)
+        ));
+    }
+}
