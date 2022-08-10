@@ -160,7 +160,7 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
             &mut writer,
             &Record::Header(records::Header {
                 profile: opts.profile,
-                library: String::from("mcap-rs 0.2"),
+                library: String::from("mcap-rs-") + env!("CARGO_PKG_VERSION"),
             }),
         )?;
 
