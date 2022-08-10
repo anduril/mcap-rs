@@ -26,5 +26,6 @@ camino = "1.0"
 clap = { version = "3.2", features = ["derive"]}
 itertools = "0.10"
 memmap = "0.7"
+rayon = "1.5"
 simplelog = "0.12"
 tempfile = "3.3"
