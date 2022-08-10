@@ -12,7 +12,7 @@ use byteorder::{WriteBytesExt, LE};
 use crate::{
     io_utils::CountingCrcWriter,
     records::{self, MessageHeader, Record},
-    Attachment, Channel, McapError, McapResult, Message, Schema, MAGIC,
+    Attachment, Channel, Compression, McapError, McapResult, Message, Schema, MAGIC,
 };
 
 pub use records::Metadata;
@@ -93,12 +93,53 @@ fn write_record<W: Write>(w: &mut W, r: &Record) -> io::Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+pub struct WriteOptions {
+    compression: Option<Compression>,
+    profile: String,
+}
+
+impl Default for WriteOptions {
+    fn default() -> Self {
+        Self {
+            compression: Some(Compression::Zstd),
+            profile: String::new(),
+        }
+    }
+}
+
+impl WriteOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn compression(self, compression: Option<Compression>) -> Self {
+        Self {
+            compression,
+            ..self
+        }
+    }
+
+    pub fn profile<S: Into<String>>(self, profile: S) -> Self {
+        Self {
+            profile: profile.into(),
+            ..self
+        }
+    }
+
+    /// Creates a [`Writer`] whch writes to `w` using the given options
+    pub fn create<'a, W: Write + Seek>(self, w: W) -> McapResult<Writer<'a, W>> {
+        Writer::with_options(w, self)
+    }
+}
+
 /// Writes an MCAP file to the given [writer](Write).
 ///
 /// Users should call [`finish()`](Self::finish) to flush the stream
 /// and check for errors when done; otherwise the result will be unwrapped on drop.
 pub struct Writer<'a, W: Write + Seek> {
     writer: Option<WriteMode<W>>,
+    compression: Option<Compression>,
     schemas: HashMap<Schema<'a>, u16>,
     channels: HashMap<Channel<'a>, u16>,
     stats: records::Statistics,
@@ -108,19 +149,24 @@ pub struct Writer<'a, W: Write + Seek> {
 }
 
 impl<'a, W: Write + Seek> Writer<'a, W> {
-    pub fn new(mut writer: W) -> McapResult<Self> {
+    pub fn new(writer: W) -> McapResult<Self> {
+        Self::with_options(writer, WriteOptions::default())
+    }
+
+    fn with_options(mut writer: W, opts: WriteOptions) -> McapResult<Self> {
         writer.write_all(MAGIC)?;
 
         write_record(
             &mut writer,
             &Record::Header(records::Header {
-                profile: String::new(),
-                library: String::from("mcap-rs 0.1"),
+                profile: opts.profile,
+                library: String::from("mcap-rs 0.2"),
             }),
         )?;
 
         Ok(Self {
             writer: Some(WriteMode::Raw(writer)),
+            compression: opts.compression,
             schemas: HashMap::new(),
             channels: HashMap::new(),
             stats: records::Statistics::default(),
@@ -292,7 +338,7 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
             WriteMode::Raw(w) => {
                 // It's chunkin time.
                 self.stats.chunk_count += 1;
-                WriteMode::Chunk(ChunkWriter::new(w)?)
+                WriteMode::Chunk(ChunkWriter::new(w, self.compression)?)
             }
             chunk => chunk,
         });
@@ -458,33 +504,88 @@ impl<'a, W: Write + Seek> Drop for Writer<'a, W> {
     }
 }
 
-struct ChunkWriter<W: Write + Seek> {
+enum Compressor<W: Write> {
+    Null(W),
+    Zstd(zstd::Encoder<'static, W>),
+    Lz4(lz4::Encoder<W>),
+}
+
+impl<W: Write> Compressor<W> {
+    fn finish(self) -> io::Result<W> {
+        Ok(match self {
+            Compressor::Null(w) => w,
+            Compressor::Zstd(w) => w.finish()?,
+            Compressor::Lz4(w) => {
+                let (w, err) = w.finish();
+                err?;
+                w
+            }
+        })
+    }
+}
+
+impl<W: Write> Write for Compressor<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            Compressor::Null(w) => w.write(buf),
+            Compressor::Zstd(w) => w.write(buf),
+            Compressor::Lz4(w) => w.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Compressor::Null(w) => w.flush(),
+            Compressor::Zstd(w) => w.flush(),
+            Compressor::Lz4(w) => w.flush(),
+        }
+    }
+}
+
+struct ChunkWriter<W: Write> {
     header_start: u64,
     stream_start: u64,
     header: records::ChunkHeader,
-    compressor: CountingCrcWriter<zstd::Encoder<'static, W>>,
+    compressor: CountingCrcWriter<Compressor<W>>,
     indexes: BTreeMap<u16, Vec<records::MessageIndexEntry>>,
 }
 
 impl<W: Write + Seek> ChunkWriter<W> {
-    fn new(mut writer: W) -> McapResult<Self> {
+    fn new(mut writer: W, compression: Option<Compression>) -> McapResult<Self> {
         let header_start = writer.stream_position()?;
 
         op_and_len(&mut writer, 0x06, !0)?;
+
+        let compression_name = match compression {
+            Some(Compression::Zstd) => "zstd",
+            Some(Compression::Lz4) => "lz4",
+            None => "",
+        };
+
         let header = records::ChunkHeader {
             message_start_time: 0,
             message_end_time: 0,
             uncompressed_size: !0,
             uncompressed_crc: !0,
-            compression: String::from("zstd"),
+            compression: String::from(compression_name),
             compressed_size: !0,
         };
 
         writer.write_le(&header)?;
         let stream_start = writer.stream_position()?;
 
-        let mut compressor = zstd::Encoder::new(writer, 0)?; // TODO: Compression options
-        compressor.multithread(num_cpus::get_physical() as u32)?;
+        let compressor = match compression {
+            Some(Compression::Zstd) => {
+                let mut enc = zstd::Encoder::new(writer, 0)?;
+                enc.multithread(num_cpus::get_physical() as u32)?;
+                Compressor::Zstd(enc)
+            }
+            Some(Compression::Lz4) => {
+                let b = lz4::EncoderBuilder::new();
+                Compressor::Lz4(b.build(writer)?)
+            }
+            None => Compressor::Null(writer),
+        };
         let compressor = CountingCrcWriter::new(compressor);
         Ok(Self {
             compressor,
@@ -560,11 +661,11 @@ impl<W: Write + Seek> ChunkWriter<W> {
     fn finish(mut self) -> McapResult<(W, records::ChunkIndex)> {
         // Get the number of uncompressed bytes written and the CRC.
         self.header.uncompressed_size = self.compressor.position();
-        let (zstd_stream, crc) = self.compressor.finalize();
+        let (stream, crc) = self.compressor.finalize();
         self.header.uncompressed_crc = crc;
 
-        // Finalize the ztsd stream - it maintains an internal buffer.
-        let mut writer = zstd_stream.finish()?;
+        // Finalize the compression stream - it maintains an internal buffer.
+        let mut writer = stream.finish()?;
         let end_of_stream = writer.stream_position()?;
         self.header.compressed_size = end_of_stream - self.stream_start;
         let record_size = (end_of_stream - self.header_start) as usize - 9; // 1 byte op, 8 byte len

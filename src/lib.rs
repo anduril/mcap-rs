@@ -32,6 +32,7 @@
 //! use mcap::{Channel, records::MessageHeader, Writer};
 //!
 //! fn write_it() -> Result<()> {
+//!     // To set the profile or compression options, see mcap::WriteOptions.
 //!     let mut out = Writer::new(
 //!         BufWriter::new(fs::File::create("out.mcap")?)
 //!     )?;
@@ -127,6 +128,14 @@ pub type McapResult<T> = Result<T, McapError>;
 /// Magic bytes for the MCAP format
 pub const MAGIC: &[u8] = &[0x89, b'M', b'C', b'A', b'P', 0x30, b'\r', b'\n'];
 
+/// Compression options for chunks of channels, schemas, and messages in an MCAP file
+#[derive(Debug, Copy, Clone, Default)]
+pub enum Compression {
+    #[default]
+    Zstd,
+    Lz4,
+}
+
 /// Describes a schema used by one or more [Channel]s in an MCAP file
 ///
 /// The CoW can either borrow directly from the mapped file,
@@ -181,4 +190,4 @@ pub struct Attachment<'a> {
 }
 
 pub use read::{MessageStream, Summary};
-pub use write::Writer;
+pub use write::{WriteOptions, Writer};
