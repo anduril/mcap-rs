@@ -1,6 +1,10 @@
 //! Raw records parsed from an MCAP file
 //!
 //! See <https://github.com/foxglove/mcap/tree/main/docs/specification>
+//!
+//! You probably want to user higher-level interfaces, like
+//! [`Message`](crate::Message), [`Channel`](crate::Channel), and [`Schema`](crate::Schema),
+//! read from iterators like [`MesssageStream`](crate::MessageStream).
 
 use binrw::io::{Read, Seek, Write};
 use binrw::*;

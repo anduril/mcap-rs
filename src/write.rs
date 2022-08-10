@@ -93,7 +93,7 @@ fn write_record<W: Write>(w: &mut W, r: &Record) -> io::Result<()> {
     Ok(())
 }
 
-/// Writes an MCAP file to the given [Write]
+/// Writes an MCAP file to the given [writer](Write).
 ///
 /// Users should call [`finish()`](Self::finish) to flush the stream
 /// and check for errors when done; otherwise the result will be unwrapped on drop.
@@ -130,7 +130,7 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
         })
     }
 
-    /// Adds a channel (and its provided schema, if any), returning its ID
+    /// Adds a channel (and its provided schema, if any), returning its ID.
     ///
     /// Useful with subequent calls to [`write_to_known_channel()`](Self::write_to_known_channel)
     pub fn add_channel(&mut self, chan: &Channel<'a>) -> McapResult<u16> {

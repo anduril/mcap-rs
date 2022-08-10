@@ -379,7 +379,7 @@ fn read_record_from_chunk_stream<'a, R: Read>(r: &mut R) -> McapResult<records::
     Ok(record)
 }
 
-/// Flattens chunks into the top-level record stream
+/// Like [`LinearReader`], but unpacks chunks' records into its stream
 pub struct ChunkFlattener<'a> {
     top_level: LinearReader<'a>,
     dechunk: Option<ChunkReader<'a>>,
@@ -505,8 +505,8 @@ impl<'a> ChannelAccumulator<'a> {
     }
 }
 
-/// Read all messages from the MCAP file in the order they were written,
-/// and perform needed validation (CRC checks, etc.) as we go.
+/// Reads all messages from the MCAP file---in the order they were written---and
+/// perform needed validation (CRCs, etc.) as we go.
 ///
 /// This stops at the end of the data section and does not read the summary.
 ///
@@ -621,10 +621,13 @@ impl<'a> Iterator for MessageStream<'a> {
     }
 }
 
+/// Indexes of an MCAP file parsed from its (optional) summary section
 #[derive(Default, Eq, PartialEq)]
 pub struct Summary<'a> {
     pub stats: Option<records::Statistics>,
+    /// Maps channel IDs to their channel
     pub channels: HashMap<u16, Arc<Channel<'a>>>,
+    /// Maps schema IDs to their schema
     pub schemas: HashMap<u16, Arc<Schema<'a>>>,
     pub chunk_indexes: Vec<records::ChunkIndex>,
     pub attachment_indexes: Vec<records::AttachmentIndex>,
@@ -650,6 +653,7 @@ impl fmt::Debug for Summary<'_> {
 }
 
 impl<'a> Summary<'a> {
+    /// Read the summary section of the given mapped MCAP file, if it has one.
     pub fn read(mcap: &'a [u8]) -> McapResult<Option<Self>> {
         const FOOTER_LEN: usize = 20 + 8 + 1; // 20 bytes + 8 byte len + 1 byte opcode
 
@@ -775,11 +779,11 @@ impl<'a> Summary<'a> {
         Ok(messages)
     }
 
-    /// Read the mesage indexes for the given indexed chunk out of the MCAP map.
+    /// Read the mesage indexes for the given indexed chunk.
     ///
     /// Channels and their schemas are pulled from this summary.
-    /// The offsets in each message index entry is relative to the decompressed
-    /// contents of the given chunk.
+    /// The offsets in each [`MessageIndexEntry`](records::MessageIndexEntry)
+    /// is relative to the decompressed contents of the given chunk.
     pub fn read_message_indexes(
         &self,
         mcap: &[u8],
@@ -835,9 +839,9 @@ impl<'a> Summary<'a> {
     /// Seek to the given message in the given indexed chunk.
     ///
     /// If you're interested in more than a single message from the chunk,
-    /// [`Summary::stream_chunk`] is probably a better bet.
+    /// filtering [`Summary::stream_chunk`] is probably a better bet.
     /// Compressed chunks aren't random access -
-    /// this decompresses everything before
+    /// this decompresses everything in the chunk before
     /// [`message.offset`](records::MessageIndexEntry::offset) and throws it away.
     pub fn seek_message(
         &self,
@@ -920,7 +924,7 @@ impl<'a> Summary<'a> {
     }
 }
 
-/// Read the attachment with the given index out of the MCAP map
+/// Read the attachment with the given index.
 pub fn attachment<'a>(
     mcap: &'a [u8],
     index: &records::AttachmentIndex,
@@ -951,7 +955,7 @@ pub fn attachment<'a>(
     })
 }
 
-/// Read the metadata with the given index out of the MCAP map
+/// Read the metadata with the given index.
 pub fn metadata(mcap: &[u8], index: &records::MetadataIndex) -> McapResult<records::Metadata> {
     let end = (index.offset + index.length) as usize;
     if mcap.len() < end {
