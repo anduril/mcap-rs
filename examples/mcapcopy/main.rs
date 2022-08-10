@@ -55,6 +55,12 @@ fn run() -> Result<()> {
                 .collect::<Vec<_>>()
                 .join(" ")
         );
+
+        // We can easily take each Message and write it as a quick and dirty example,
+        // but in real code, we'd be much better off adding each channel to the writer,
+        // then calling `write_to_known_channel()`.
+        // This avoids having to rehash the channel (and its schema) on each `write()`
+        // to figure out what its ID is.
         out.write(&message)?;
     }
     Ok(())
