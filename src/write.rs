@@ -181,7 +181,7 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
     /// Useful with subequent calls to [`write_to_known_channel()`](Self::write_to_known_channel)
     pub fn add_channel(&mut self, chan: &Channel<'a>) -> McapResult<u16> {
         let schema_id = match &chan.schema {
-            Some(s) => self.add_schema(&*s)?,
+            Some(s) => self.add_schema(s)?,
             None => 0,
         };
 
@@ -392,6 +392,8 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
         let writer = &mut writer;
 
         // Take all the data we need, swapping in empty containers.
+        // Without this, we get yelled at for moving things out of a mutable ref
+        // (&mut self).
         // (We could get around all this noise by having finish() take self,
         // but then it wouldn't be droppable _and_ finish...able.
         let mut stats = records::Statistics::default();
