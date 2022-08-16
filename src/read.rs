@@ -14,7 +14,7 @@ use log::*;
 
 use crate::{
     io_utils::CountingCrcReader,
-    records::{self, Record},
+    records::{self, op, Record},
     Attachment, Channel, McapError, McapResult, Message, Schema, MAGIC,
 };
 
@@ -118,9 +118,9 @@ fn read_record(op: u8, body: &[u8]) -> McapResult<records::Record<'_>> {
     }
 
     Ok(match op {
-        0x01 => Record::Header(record!(body)),
-        0x02 => Record::Footer(record!(body)),
-        0x03 => {
+        op::HEADER => Record::Header(record!(body)),
+        op::FOOTER => Record::Footer(record!(body)),
+        op::SCHEMA => {
             let mut c = Cursor::new(body);
             let header: records::SchemaHeader = c.read_le()?;
             let data = Cow::Borrowed(&body[c.position() as usize..]);
@@ -132,14 +132,14 @@ fn read_record(op: u8, body: &[u8]) -> McapResult<records::Record<'_>> {
             }
             Record::Schema { header, data }
         }
-        0x04 => Record::Channel(record!(body)),
-        0x05 => {
+        op::CHANNEL => Record::Channel(record!(body)),
+        op::MESSAGE => {
             let mut c = Cursor::new(body);
             let header = c.read_le()?;
             let data = Cow::Borrowed(&body[c.position() as usize..]);
             Record::Message { header, data }
         }
-        0x06 => {
+        op::CHUNK => {
             let mut c = Cursor::new(body);
             let header: records::ChunkHeader = c.read_le()?;
             let data = &body[c.position() as usize..];
@@ -148,9 +148,9 @@ fn read_record(op: u8, body: &[u8]) -> McapResult<records::Record<'_>> {
             }
             Record::Chunk { header, data }
         }
-        0x07 => Record::MessageIndex(record!(body)),
-        0x08 => Record::ChunkIndex(record!(body)),
-        0x09 => {
+        op::MESSAGE_INDEX => Record::MessageIndex(record!(body)),
+        op::CHUNK_INDEX => Record::ChunkIndex(record!(body)),
+        op::ATTACHMENT => {
             let mut c = Cursor::new(body);
             let header: records::AttachmentHeader = c.read_le()?;
             let data = &body[c.position() as usize..body.len() - 4];
@@ -183,12 +183,12 @@ fn read_record(op: u8, body: &[u8]) -> McapResult<records::Record<'_>> {
 
             Record::Attachment { header, data }
         }
-        0x0a => Record::AttachmentIndex(record!(body)),
-        0x0b => Record::Statistics(record!(body)),
-        0x0c => Record::Metadata(record!(body)),
-        0x0d => Record::MetadataIndex(record!(body)),
-        0x0e => Record::SummaryOffset(record!(body)),
-        0x0f => Record::EndOfData(record!(body)),
+        op::ATTACHMENT_INDEX => Record::AttachmentIndex(record!(body)),
+        op::STATISTICS => Record::Statistics(record!(body)),
+        op::METADATA => Record::Metadata(record!(body)),
+        op::METADATA_INDEX => Record::MetadataIndex(record!(body)),
+        op::SUMMARY_OFFSET => Record::SummaryOffset(record!(body)),
+        op::END_OF_DATA => Record::EndOfData(record!(body)),
         opcode => Record::Unknown {
             opcode,
             data: Cow::Borrowed(body),
@@ -303,7 +303,7 @@ fn read_record_from_chunk_stream<'a, R: Read>(r: &mut R) -> McapResult<records::
 
     debug!("chunk: opcode {op:02X}, length {len}");
     let record = match op {
-        0x03 => {
+        op::SCHEMA => {
             let mut record = Vec::new();
             r.take(len).read_to_end(&mut record)?;
             if len as usize != record.len() {
@@ -329,7 +329,7 @@ fn read_record_from_chunk_stream<'a, R: Read>(r: &mut R) -> McapResult<records::
                 data: Cow::Owned(data),
             }
         }
-        0x04 => {
+        op::CHANNEL => {
             let mut record = Vec::new();
             r.take(len).read_to_end(&mut record)?;
             if len as usize != record.len() {
@@ -348,7 +348,7 @@ fn read_record_from_chunk_stream<'a, R: Read>(r: &mut R) -> McapResult<records::
 
             Record::Channel(channel)
         }
-        0x05 => {
+        op::MESSAGE => {
             // Optimization: messages are the mainstay of the file,
             // so allocate the header and the data separately to avoid having
             // to split them up or move them around later.

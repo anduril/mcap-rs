@@ -11,7 +11,7 @@ use byteorder::{WriteBytesExt, LE};
 
 use crate::{
     io_utils::CountingCrcWriter,
-    records::{self, MessageHeader, Record},
+    records::{self, op, MessageHeader, Record},
     Attachment, Channel, Compression, McapError, McapResult, Message, Schema, MAGIC,
 };
 
@@ -32,7 +32,7 @@ fn write_record<W: Write>(w: &mut W, r: &Record) -> io::Result<()> {
     // Annoying: our stream isn't Seek if we're writing to a compressed chunk stream,
     // so we need an intermediate buffer.
     macro_rules! record {
-        ($op:literal, $b:ident) => {{
+        ($op:expr, $b:ident) => {{
             let mut rec_buf = Vec::new();
             Cursor::new(&mut rec_buf).write_le($b).unwrap();
 
@@ -42,7 +42,7 @@ fn write_record<W: Write>(w: &mut W, r: &Record) -> io::Result<()> {
     }
 
     macro_rules! header_and_data {
-        ($op:literal, $header:ident, $data:ident) => {{
+        ($op:expr, $header:ident, $data:ident) => {{
             let mut header_buf = Vec::new();
             Cursor::new(&mut header_buf).write_le($header).unwrap();
 
@@ -53,20 +53,20 @@ fn write_record<W: Write>(w: &mut W, r: &Record) -> io::Result<()> {
     }
 
     match r {
-        Record::Header(h) => record!(0x01, h),
+        Record::Header(h) => record!(op::HEADER, h),
         Record::Footer(_) => {
             unreachable!("Footer handles its own serialization because its CRC is self-referencing")
         }
-        Record::Schema { header, data } => header_and_data!(0x03, header, data),
-        Record::Channel(c) => record!(0x04, c),
-        Record::Message { header, data } => header_and_data!(0x05, header, data),
+        Record::Schema { header, data } => header_and_data!(op::SCHEMA, header, data),
+        Record::Channel(c) => record!(op::CHANNEL, c),
+        Record::Message { header, data } => header_and_data!(op::MESSAGE, header, data),
         Record::Chunk { .. } => {
             unreachable!("Chunks handle their own serialization due to seeking shenanigans")
         }
         Record::MessageIndex(_) => {
             unreachable!("MessageIndexes handle their own serialization to recycle the buffer between indexes")
         }
-        Record::ChunkIndex(c) => record!(0x08, c),
+        Record::ChunkIndex(c) => record!(op::CHUNK_INDEX, c),
         Record::Attachment { header, data } => {
             assert_eq!(header.data_len, data.len() as u64);
 
@@ -74,7 +74,7 @@ fn write_record<W: Write>(w: &mut W, r: &Record) -> io::Result<()> {
             // but not the op and len
             let mut header_buf = Vec::new();
             Cursor::new(&mut header_buf).write_le(header).unwrap();
-            op_and_len(w, 0x09, header_buf.len() + data.len() + 4)?; // 4 for crc
+            op_and_len(w, op::ATTACHMENT, header_buf.len() + data.len() + 4)?; // 4 for crc
 
             let mut checksummer = CountingCrcWriter::new(w);
             checksummer.write_all(&header_buf)?;
@@ -82,12 +82,12 @@ fn write_record<W: Write>(w: &mut W, r: &Record) -> io::Result<()> {
             let (w, crc) = checksummer.finalize();
             w.write_u32::<LE>(crc)?;
         }
-        Record::AttachmentIndex(ai) => record!(0x0A, ai),
-        Record::Statistics(s) => record!(0x0B, s),
-        Record::Metadata(m) => record!(0x0C, m),
-        Record::MetadataIndex(mi) => record!(0x0D, mi),
-        Record::SummaryOffset(so) => record!(0x0E, so),
-        Record::EndOfData(eod) => record!(0x0F, eod),
+        Record::AttachmentIndex(ai) => record!(op::ATTACHMENT_INDEX, ai),
+        Record::Statistics(s) => record!(op::STATISTICS, s),
+        Record::Metadata(m) => record!(op::METADATA, m),
+        Record::MetadataIndex(mi) => record!(op::METADATA_INDEX, mi),
+        Record::SummaryOffset(so) => record!(op::SUMMARY_OFFSET, so),
+        Record::EndOfData(eod) => record!(op::END_OF_DATA, eod),
         _ => todo!(),
     };
     Ok(())
@@ -486,7 +486,7 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
 
         // In an incredibly bizarre move, the CRC in the footer _includes_
         // part of the footer. All of the wat.
-        op_and_len(&mut summary_checksummer, 0x02, 20)?;
+        op_and_len(&mut summary_checksummer, op::FOOTER, 20)?;
         summary_checksummer.write_u64::<LE>(summary_start)?;
         summary_checksummer.write_u64::<LE>(0)?; // Summary offsets not provided yet.
 
@@ -556,7 +556,7 @@ impl<W: Write + Seek> ChunkWriter<W> {
     fn new(mut writer: W, compression: Option<Compression>) -> McapResult<Self> {
         let header_start = writer.stream_position()?;
 
-        op_and_len(&mut writer, 0x06, !0)?;
+        op_and_len(&mut writer, op::CHUNK, !0)?;
 
         let compression_name = match compression {
             Some(Compression::Zstd) => "zstd",
@@ -674,7 +674,7 @@ impl<W: Write + Seek> ChunkWriter<W> {
 
         // Back up, write our finished header, then continue at the end of the stream.
         writer.seek(SeekFrom::Start(self.header_start))?;
-        op_and_len(&mut writer, 0x06, record_size)?;
+        op_and_len(&mut writer, op::CHUNK, record_size)?;
         writer.write_le(&self.header)?;
         assert_eq!(self.stream_start, writer.stream_position()?);
         assert_eq!(writer.seek(SeekFrom::End(0))?, end_of_stream);
@@ -694,7 +694,7 @@ impl<W: Write + Seek> ChunkWriter<W> {
             };
 
             Cursor::new(&mut index_buf).write_le(&index)?;
-            op_and_len(&mut writer, 0x07, index_buf.len())?;
+            op_and_len(&mut writer, op::MESSAGE_INDEX, index_buf.len())?;
             writer.write_all(&index_buf)?;
         }
         let end_of_indexes = writer.stream_position()?;

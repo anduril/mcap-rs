@@ -15,6 +15,29 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+/// Opcodes for MCAP file records.
+///
+/// "Records are identified by a single-byte opcode.
+/// Record opcodes in the range 0x01-0x7F are reserved for future MCAP format usage.
+/// 0x80-0xFF are reserved for application extensions and user proposals."
+pub mod op {
+    pub const HEADER: u8 = 0x01;
+    pub const FOOTER: u8 = 0x02;
+    pub const SCHEMA: u8 = 0x03;
+    pub const CHANNEL: u8 = 0x04;
+    pub const MESSAGE: u8 = 0x05;
+    pub const CHUNK: u8 = 0x06;
+    pub const MESSAGE_INDEX: u8 = 0x07;
+    pub const CHUNK_INDEX: u8 = 0x08;
+    pub const ATTACHMENT: u8 = 0x09;
+    pub const ATTACHMENT_INDEX: u8 = 0x0A;
+    pub const STATISTICS: u8 = 0x0B;
+    pub const METADATA: u8 = 0x0C;
+    pub const METADATA_INDEX: u8 = 0x0D;
+    pub const SUMMARY_OFFSET: u8 = 0x0E;
+    pub const END_OF_DATA: u8 = 0x0F;
+}
+
 /// A raw record from an MCAP file.
 ///
 /// For records with large slices of binary data (schemas, messages, chunks...),
