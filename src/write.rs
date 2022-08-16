@@ -382,8 +382,16 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
         // Finish any chunk we were working on and update stats, indexes, etc.
         self.finish_chunk()?;
 
-        // Grab all the data we need for the summary now because we're about to
-        // take a mutable borrow out on self.writer.
+        // Grab the writer. self.writer becoming None makes subsequent writes fail.
+        let mut writer = match self.writer.take() {
+            // We called finish_chunk() above, so we're back to raw writes for
+            // the summary section.
+            Some(WriteMode::Raw(w)) => w,
+            _ => unreachable!(),
+        };
+        let writer = &mut writer;
+
+        // Take all the data we need, swapping in empty containers.
         // (We could get around all this noise by having finish() take self,
         // but then it wouldn't be droppable _and_ finish...able.
         let mut stats = records::Statistics::default();
@@ -426,13 +434,6 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
 
         let mut all_schemas: Vec<(Schema<'_>, u16)> = self.schemas.drain().collect();
         all_schemas.sort_unstable_by_key(|(_, v)| *v);
-
-        // We called finish_chunk() above, so we're back to raw writes for
-        // the summary section.
-        let writer = match &mut self.writer {
-            Some(WriteMode::Raw(w)) => w,
-            _ => unreachable!(),
-        };
 
         // We're done with the data secton!
         write_record(writer, &Record::EndOfData(records::EndOfData::default()))?;
@@ -493,7 +494,6 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
 
         writer.write_all(MAGIC)?;
         writer.flush()?;
-        self.writer = None; // Make subsequent writes fail
         Ok(())
     }
 }
