@@ -382,7 +382,7 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
         // Finish any chunk we were working on and update stats, indexes, etc.
         self.finish_chunk()?;
 
-        // Grab the writer. self.writer becoming None makes subsequent writes fail.
+        // Grab the writer - self.writer becoming None makes subsequent writes fail.
         let mut writer = match self.writer.take() {
             // We called finish_chunk() above, so we're back to raw writes for
             // the summary section.
@@ -390,6 +390,9 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
             _ => unreachable!(),
         };
         let writer = &mut writer;
+
+        // We're done with the data secton!
+        write_record(writer, &Record::EndOfData(records::EndOfData::default()))?;
 
         // Take all the data we need, swapping in empty containers.
         // Without this, we get yelled at for moving things out of a mutable ref
@@ -437,15 +440,19 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
         let mut all_schemas: Vec<(Schema<'_>, u16)> = self.schemas.drain().collect();
         all_schemas.sort_unstable_by_key(|(_, v)| *v);
 
-        // We're done with the data secton!
-        write_record(writer, &Record::EndOfData(records::EndOfData::default()))?;
+        let mut offsets = Vec::new();
 
         let summary_start = writer.stream_position()?;
 
         // Let's get a CRC of the summary section.
-        let mut summary_checksummer = CountingCrcWriter::new(writer);
+        let mut ccw = CountingCrcWriter::new(writer);
+
+        fn posit<W: Write + Seek>(ccw: &mut CountingCrcWriter<W>) -> io::Result<u64> {
+            ccw.get_mut().stream_position()
+        }
 
         // Write all schemas.
+        let schemas_start = summary_start;
         for (schema, id) in all_schemas {
             let header = records::SchemaHeader {
                 id,
@@ -455,9 +462,19 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
             };
             let data = schema.data;
 
-            write_record(&mut summary_checksummer, &Record::Schema { header, data })?;
+            write_record(&mut ccw, &Record::Schema { header, data })?;
         }
+        let schemas_end = posit(&mut ccw)?;
+        if schemas_end - schemas_start > 0 {
+            offsets.push(records::SummaryOffset {
+                group_opcode: op::SCHEMA,
+                group_start: schemas_start,
+                group_length: schemas_end - schemas_start,
+            });
+        }
+
         // Write all channels.
+        let channels_start = schemas_end;
         for cs in all_channels {
             let rec = records::Channel {
                 id: cs.channel_id,
@@ -466,31 +483,82 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
                 message_encoding: cs.channel.message_encoding,
                 metadata: cs.channel.metadata,
             };
-            write_record(&mut summary_checksummer, &Record::Channel(rec))?;
+            write_record(&mut ccw, &Record::Channel(rec))?;
+        }
+        let channels_end = posit(&mut ccw)?;
+        if channels_end - channels_start > 0 {
+            offsets.push(records::SummaryOffset {
+                group_opcode: op::CHANNEL,
+                group_start: channels_start,
+                group_length: channels_end - channels_start,
+            });
         }
 
         // Write all chunk indexes.
+        let chunk_indexes_start = channels_end;
         for index in chunk_indexes {
-            write_record(&mut summary_checksummer, &Record::ChunkIndex(index))?;
+            write_record(&mut ccw, &Record::ChunkIndex(index))?;
         }
-        // ...and attachment indexes
-        for index in attachment_indexes {
-            write_record(&mut summary_checksummer, &Record::AttachmentIndex(index))?;
-        }
-        // ...and metadata indexes
-        for index in metadata_indexes {
-            write_record(&mut summary_checksummer, &Record::MetadataIndex(index))?;
+        let chunk_indexes_end = posit(&mut ccw)?;
+        if chunk_indexes_end - chunk_indexes_start > 0 {
+            offsets.push(records::SummaryOffset {
+                group_opcode: op::CHUNK_INDEX,
+                group_start: chunk_indexes_start,
+                group_length: chunk_indexes_end - chunk_indexes_start,
+            });
         }
 
-        write_record(&mut summary_checksummer, &Record::Statistics(stats))?;
+        // ...and attachment indexes
+        let attachment_indexes_start = chunk_indexes_end;
+        for index in attachment_indexes {
+            write_record(&mut ccw, &Record::AttachmentIndex(index))?;
+        }
+        let attachment_indexes_end = posit(&mut ccw)?;
+        if attachment_indexes_end - attachment_indexes_start > 0 {
+            offsets.push(records::SummaryOffset {
+                group_opcode: op::ATTACHMENT_INDEX,
+                group_start: attachment_indexes_start,
+                group_length: attachment_indexes_end - attachment_indexes_start,
+            });
+        }
+
+        // ...and metadata indexes
+        let metadata_indexes_start = attachment_indexes_end;
+        for index in metadata_indexes {
+            write_record(&mut ccw, &Record::MetadataIndex(index))?;
+        }
+        let metadata_indexes_end = posit(&mut ccw)?;
+        if metadata_indexes_end - metadata_indexes_start > 0 {
+            offsets.push(records::SummaryOffset {
+                group_opcode: op::METADATA_INDEX,
+                group_start: metadata_indexes_start,
+                group_length: metadata_indexes_end - metadata_indexes_start,
+            });
+        }
+
+        let stats_start = metadata_indexes_end;
+        write_record(&mut ccw, &Record::Statistics(stats))?;
+        let stats_end = posit(&mut ccw)?;
+        assert!(stats_end > stats_start);
+        offsets.push(records::SummaryOffset {
+            group_opcode: op::STATISTICS,
+            group_start: stats_start,
+            group_length: stats_end - stats_start,
+        });
+
+        // Write the summary offsets we've been accumulating
+        let summary_offset_start = stats_end;
+        for offset in offsets {
+            write_record(&mut ccw, &Record::SummaryOffset(offset))?;
+        }
 
         // In an incredibly bizarre move, the CRC in the footer _includes_
         // part of the footer. All of the wat.
-        op_and_len(&mut summary_checksummer, op::FOOTER, 20)?;
-        summary_checksummer.write_u64::<LE>(summary_start)?;
-        summary_checksummer.write_u64::<LE>(0)?; // Summary offsets not provided yet.
+        op_and_len(&mut ccw, op::FOOTER, 20)?;
+        ccw.write_u64::<LE>(summary_start)?;
+        ccw.write_u64::<LE>(summary_offset_start)?;
 
-        let (writer, summary_crc) = summary_checksummer.finalize();
+        let (writer, summary_crc) = ccw.finalize();
 
         writer.write_u32::<LE>(summary_crc)?;
 

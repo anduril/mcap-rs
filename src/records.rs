@@ -79,6 +79,29 @@ pub enum Record<'a> {
     },
 }
 
+impl Record<'_> {
+    pub fn opcode(&self) -> u8 {
+        match &self {
+            Record::Header(_) => op::HEADER,
+            Record::Footer(_) => op::FOOTER,
+            Record::Schema { .. } => op::SCHEMA,
+            Record::Channel(_) => op::CHANNEL,
+            Record::Message { .. } => op::MESSAGE,
+            Record::Chunk { .. } => op::CHUNK,
+            Record::MessageIndex(_) => op::MESSAGE_INDEX,
+            Record::ChunkIndex(_) => op::CHUNK_INDEX,
+            Record::Attachment { .. } => op::ATTACHMENT,
+            Record::AttachmentIndex(_) => op::ATTACHMENT_INDEX,
+            Record::Statistics(_) => op::STATISTICS,
+            Record::Metadata(_) => op::METADATA,
+            Record::MetadataIndex(_) => op::METADATA_INDEX,
+            Record::SummaryOffset(_) => op::SUMMARY_OFFSET,
+            Record::EndOfData(_) => op::END_OF_DATA,
+            Record::Unknown { opcode, .. } => *opcode,
+        }
+    }
+}
+
 #[binrw]
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
 struct McapString {

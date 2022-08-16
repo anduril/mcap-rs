@@ -56,6 +56,10 @@ impl<W: Write> CountingCrcWriter<W> {
         self.count
     }
 
+    pub fn get_mut(&mut self) -> &mut W {
+        &mut self.inner
+    }
+
     /// Consumes the reader and returns the inner writer and the checksum
     pub fn finalize(self) -> (W, u32) {
         (self.inner, self.hasher.finalize())

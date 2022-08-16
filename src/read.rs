@@ -37,7 +37,10 @@ impl<'a> LinearReader<'a> {
         Ok(Self::sans_magic(buf))
     }
 
-    fn sans_magic(buf: &'a [u8]) -> Self {
+    /// Like [`new()`](Self::new), but assumes `buf` has the magic bytes sliced off.
+    ///
+    /// Useful for iterating through slices of an MCAP file instead of the whole thing.
+    pub fn sans_magic(buf: &'a [u8]) -> Self {
         Self {
             buf,
             malformed: false,
@@ -621,6 +624,30 @@ impl<'a> Iterator for MessageStream<'a> {
     }
 }
 
+const FOOTER_LEN: usize = 20 + 8 + 1; // 20 bytes + 8 byte len + 1 byte opcode
+
+/// Read the MCAP footer.
+///
+/// You'd probably prefer to use [`Summary::read`] to parse the whole summary,
+/// then index into the rest of the file with
+/// [`Summary::stream_chunk`], [`attachment`], [`metadata`], etc.
+pub fn footer(mcap: &[u8]) -> McapResult<records::Footer> {
+    if mcap.len() < MAGIC.len() * 2 + FOOTER_LEN {
+        return Err(McapError::UnexpectedEof);
+    }
+
+    if !mcap.starts_with(MAGIC) || !mcap.ends_with(MAGIC) {
+        return Err(McapError::BadMagic);
+    }
+
+    let footer_buf = &mcap[mcap.len() - MAGIC.len() - FOOTER_LEN..];
+
+    match LinearReader::sans_magic(footer_buf).next() {
+        Some(Ok(Record::Footer(f))) => Ok(f),
+        _ => Err(McapError::BadFooter),
+    }
+}
+
 /// Indexes of an MCAP file parsed from its (optional) summary section
 #[derive(Default, Eq, PartialEq)]
 pub struct Summary<'a> {
@@ -655,35 +682,20 @@ impl fmt::Debug for Summary<'_> {
 impl<'a> Summary<'a> {
     /// Read the summary section of the given mapped MCAP file, if it has one.
     pub fn read(mcap: &'a [u8]) -> McapResult<Option<Self>> {
-        const FOOTER_LEN: usize = 20 + 8 + 1; // 20 bytes + 8 byte len + 1 byte opcode
-
-        if mcap.len() < MAGIC.len() * 2 + FOOTER_LEN {
-            return Err(McapError::UnexpectedEof);
-        }
-
-        if !mcap.starts_with(MAGIC) || !mcap.ends_with(MAGIC) {
-            return Err(McapError::BadMagic);
-        }
-
-        let footer_buf = &mcap[mcap.len() - MAGIC.len() - FOOTER_LEN..];
-
-        let footer = match LinearReader::sans_magic(footer_buf).next() {
-            Some(Ok(Record::Footer(f))) => f,
-            _ => return Err(McapError::BadFooter),
-        };
+        let foot = footer(mcap)?;
 
         // A summary start offset of 0 means there's no summary.
-        if footer.summary_start == 0 {
+        if foot.summary_start == 0 {
             return Ok(None);
         }
 
-        if footer.summary_crc != 0 {
+        if foot.summary_crc != 0 {
             // The checksum covers the entire summary _except_ itself, including other footer bytes.
             let calculated =
-                crc32(&mcap[footer.summary_start as usize..mcap.len() - MAGIC.len() - 4]);
-            if footer.summary_crc != calculated {
+                crc32(&mcap[foot.summary_start as usize..mcap.len() - MAGIC.len() - 4]);
+            if foot.summary_crc != calculated {
                 return Err(McapError::BadSummaryCrc {
-                    saved: footer.summary_crc,
+                    saved: foot.summary_crc,
                     calculated,
                 });
             }
@@ -692,8 +704,11 @@ impl<'a> Summary<'a> {
         let mut summary = Summary::default();
         let mut channeler = ChannelAccumulator::default();
 
-        let summary_buf =
-            &mcap[footer.summary_start as usize..mcap.len() - MAGIC.len() - FOOTER_LEN];
+        let summary_end = match foot.summary_offset_start {
+            0 => MAGIC.len() - FOOTER_LEN,
+            sos => sos as usize,
+        };
+        let summary_buf = &mcap[foot.summary_start as usize..summary_end];
 
         for record in LinearReader::sans_magic(summary_buf) {
             match record? {
