@@ -41,7 +41,7 @@ pub mod op {
 /// A raw record from an MCAP file.
 ///
 /// For records with large slices of binary data (schemas, messages, chunks...),
-/// we use a CoW that can either borrow directly from the mapped file,
+/// we use a [`CoW`](std::borrow::Cow) that can either borrow directly from the mapped file,
 /// or hold its own buffer if it was decompressed from a chunk.
 #[derive(Debug)]
 pub enum Record<'a> {

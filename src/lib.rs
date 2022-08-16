@@ -138,7 +138,7 @@ pub enum Compression {
 
 /// Describes a schema used by one or more [Channel]s in an MCAP file
 ///
-/// The CoW can either borrow directly from the mapped file,
+/// The [`CoW`](std::borrow::Cow) can either borrow directly from the mapped file,
 /// or hold its own buffer if it was decompressed from a chunk.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Schema<'a> {
@@ -168,7 +168,7 @@ pub struct Channel<'a> {
 
 /// An event in an MCAP file, published to a [Channel]
 ///
-/// The CoW can either borrow directly from the mapped file,
+/// The [`CoW`](std::borrow::Cow) can either borrow directly from the mapped file,
 /// or hold its own buffer if it was decompressed from a chunk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message<'a> {
