@@ -403,7 +403,7 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
         // Without this, we get yelled at for moving things out of a mutable ref
         // (&mut self).
         // (We could get around all this noise by having finish() take self,
-        // but then it wouldn't be droppable _and_ finish...able.
+        // but then it wouldn't be droppable _and_ finish...able.)
         let mut stats = records::Statistics::default();
         std::mem::swap(&mut stats, &mut self.stats);
 
