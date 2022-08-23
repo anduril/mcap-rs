@@ -326,13 +326,18 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
         Ok(())
     }
 
+    /// `.expect()` message when we go to write and self.writer is `None`,
+    /// which should only happen when [`Writer::finish()`] was called.
+    const WHERE_WRITER: &'static str = "Trying to write a record on a finished MCAP";
+
     /// Starts a new chunk if we haven't done so already.
     fn chunkin_time(&mut self) -> McapResult<&mut ChunkWriter<W>> {
         // Some Rust tricky: we can't move the writer out of self.writer,
         // leave that empty for a bit, and then replace it with a ChunkWriter.
         // (That would leave it in an unspecified state if we bailed here!)
         // Instead briefly swap it out for a null writer while we set up the chunker
-        let prev_writer = self.writer.take().unwrap();
+        // The writer will only be None if finish() was called.
+        let prev_writer = self.writer.take().expect(WHERE_WRITER);
 
         self.writer = Some(match prev_writer {
             WriteMode::Raw(w) => {
@@ -352,7 +357,7 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
     /// Finish the current chunk, if we have one.
     fn finish_chunk(&mut self) -> McapResult<&mut W> {
         // See above
-        let prev_writer = self.writer.take().unwrap();
+        let prev_writer = self.writer.take().expect(WHERE_WRITER);
 
         self.writer = Some(match prev_writer {
             WriteMode::Chunk(c) => {
