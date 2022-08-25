@@ -326,6 +326,26 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
         Ok(())
     }
 
+    /// Finishes the current chunk, if we have one, and flushes the underlying
+    /// [writer](Write).
+    ///
+    /// We finish the chunk to guarantee that the file can be streamed by future
+    /// readers at least up to this point.
+    /// (The alternative is to just flush the writer mid-chunk.
+    /// But if we did that, and then writing was suddenly interrupted afterwards,
+    /// readers would have to try to recover a half-written chunk,
+    /// probably with an unfinished compresion stream.)
+    ///
+    /// Note that lossless compression schemes like LZ4 and Zstd improve
+    /// as they go, so larger chunks will tend to have better compression.
+    /// (Of course, this depends heavily on the entropy of what's being compressed!
+    /// A stream of zeroes will compress great at any chunk size, and a stream
+    /// of random data will compress terribly at any chunk size.)
+    pub fn flush(&mut self) -> McapResult<()> {
+        self.finish_chunk()?.flush()?;
+        Ok(())
+    }
+
     /// `.expect()` message when we go to write and self.writer is `None`,
     /// which should only happen when [`Writer::finish()`] was called.
     const WHERE_WRITER: &'static str = "Trying to write a record on a finished MCAP";
@@ -374,7 +394,7 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
         }
     }
 
-    /// Finishes any current chunks and writes out the rest of the file.
+    /// Finishes any current chunk and writes out the rest of the file.
     ///
     /// Subsequent calls to other methods will panic.
     pub fn finish(&mut self) -> McapResult<()> {
