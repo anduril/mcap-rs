@@ -337,7 +337,7 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
         // (That would leave it in an unspecified state if we bailed here!)
         // Instead briefly swap it out for a null writer while we set up the chunker
         // The writer will only be None if finish() was called.
-        let prev_writer = self.writer.take().expect(WHERE_WRITER);
+        let prev_writer = self.writer.take().expect(Self::WHERE_WRITER);
 
         self.writer = Some(match prev_writer {
             WriteMode::Raw(w) => {
@@ -357,7 +357,7 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
     /// Finish the current chunk, if we have one.
     fn finish_chunk(&mut self) -> McapResult<&mut W> {
         // See above
-        let prev_writer = self.writer.take().expect(WHERE_WRITER);
+        let prev_writer = self.writer.take().expect(Self::WHERE_WRITER);
 
         self.writer = Some(match prev_writer {
             WriteMode::Chunk(c) => {
