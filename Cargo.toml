@@ -17,6 +17,7 @@ lz4 = "1.0"
 num_cpus = "1.13"
 paste = "1.0"
 thiserror = "1.0"
+enumset = "1.0.11"
 zstd = { version = "0.11", features = ["zstdmt"] }
 
 [dev-dependencies]

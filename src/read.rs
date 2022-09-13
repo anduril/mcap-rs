@@ -10,6 +10,7 @@ use std::{
 
 use binrw::prelude::*;
 use crc32fast::hash as crc32;
+use enumset::{enum_set, EnumSet, EnumSetType};
 use log::*;
 
 use crate::{
@@ -17,6 +18,12 @@ use crate::{
     records::{self, op, Record},
     Attachment, Channel, McapError, McapResult, Message, Schema, MAGIC,
 };
+
+#[derive(EnumSetType, Debug)]
+pub enum Options {
+    // Turns off validation that the message stream ends with the MCAP magic byte.
+    IgnoreEndMagic,
+}
 
 /// Scans a mapped MCAP file from start to end, returning each record.
 ///
@@ -30,11 +37,22 @@ pub struct LinearReader<'a> {
 
 impl<'a> LinearReader<'a> {
     pub fn new(buf: &'a [u8]) -> McapResult<Self> {
-        if buf.len() < MAGIC.len() * 2 || !buf.starts_with(MAGIC) || !buf.ends_with(MAGIC) {
+        Self::new_with_options(buf, enum_set!())
+    }
+
+    pub fn new_with_options(buf: &'a [u8], options: EnumSet<Options>) -> McapResult<Self> {
+        if !buf.starts_with(MAGIC)
+            || (!options.contains(Options::IgnoreEndMagic)
+                && (!buf.ends_with(MAGIC) || buf.len() < 2 * MAGIC.len()))
+        {
             return Err(McapError::BadMagic);
         }
-        let buf = &buf[MAGIC.len()..buf.len() - MAGIC.len()];
-        Ok(Self::sans_magic(buf))
+        let buf = &buf[MAGIC.len()..];
+        if buf.ends_with(MAGIC) {
+            Ok(Self::sans_magic(&buf[0..buf.len() - MAGIC.len()]))
+        } else {
+            Ok(Self::sans_magic(buf))
+        }
     }
 
     /// Like [`new()`](Self::new), but assumes `buf` has the magic bytes sliced off.
@@ -391,7 +409,11 @@ pub struct ChunkFlattener<'a> {
 
 impl<'a> ChunkFlattener<'a> {
     pub fn new(buf: &'a [u8]) -> McapResult<Self> {
-        let top_level = LinearReader::new(buf)?;
+        Self::new_with_options(buf, enum_set!())
+    }
+
+    pub fn new_with_options(buf: &'a [u8], options: EnumSet<Options>) -> McapResult<Self> {
+        let top_level = LinearReader::new_with_options(buf, options)?;
         Ok(Self {
             top_level,
             dechunk: None,
@@ -528,8 +550,12 @@ pub struct MessageStream<'a> {
 
 impl<'a> MessageStream<'a> {
     pub fn new(buf: &'a [u8]) -> McapResult<Self> {
+        Self::new_with_options(buf, enum_set!())
+    }
+
+    pub fn new_with_options(buf: &'a [u8], options: EnumSet<Options>) -> McapResult<Self> {
         let full_file = buf;
-        let records = ChunkFlattener::new(buf)?;
+        let records = ChunkFlattener::new_with_options(buf, options)?;
 
         Ok(Self {
             full_file,
@@ -1037,5 +1063,21 @@ mod test {
             LinearReader::new(&MAGIC),
             Err(McapError::BadMagic)
         ));
+    }
+
+    #[test]
+    fn only_two_magic_with_ignore_end_magic() {
+        let two_magics = MAGIC.repeat(2);
+        let mut reader =
+            LinearReader::new_with_options(&two_magics, enum_set!(Options::IgnoreEndMagic))
+                .unwrap();
+        assert!(reader.next().is_none());
+    }
+
+    #[test]
+    fn only_one_magic_with_ignore_end_magic() {
+        let mut reader =
+            LinearReader::new_with_options(&MAGIC, enum_set!(Options::IgnoreEndMagic)).unwrap();
+        assert!(reader.next().is_none());
     }
 }
