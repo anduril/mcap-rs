@@ -1,5 +1,12 @@
 //! Read MCAP files
-
+//!
+//! MCAPs are read from a byte slice instead of a [`Read`] trait object.
+//! This helps us avoid unnecessary copies, since [`Schema`]s and [`Message`]s
+//! can refer directly to their data.
+//!
+//! Consider [memory-mapping](https://docs.rs/memmap/0.7.0/memmap/struct.Mmap.html)
+//! the file - the OS will load (and cache!) it on-demand, without any
+//! further system calls.
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap},
@@ -19,9 +26,13 @@ use crate::{
     Attachment, Channel, McapError, McapResult, Message, Schema, MAGIC,
 };
 
+/// Nonstandard reading options, e.g.,
+/// to be more lenient when trying to recover incomplete/damaged files.
+///
+/// More may be added in future releases.
 #[derive(EnumSetType, Debug)]
 pub enum Options {
-    // Turns off validation that the message stream ends with the MCAP magic byte.
+    /// Don't require the MCAP file to end with its magic bytes.
     IgnoreEndMagic,
 }
 
@@ -36,10 +47,13 @@ pub struct LinearReader<'a> {
 }
 
 impl<'a> LinearReader<'a> {
+    /// Create a reader for the given file,
+    /// checking [`MAGIC`] bytes on both ends.
     pub fn new(buf: &'a [u8]) -> McapResult<Self> {
         Self::new_with_options(buf, enum_set!())
     }
 
+    /// Create a reader for the given file with special options.
     pub fn new_with_options(buf: &'a [u8], options: EnumSet<Options>) -> McapResult<Self> {
         if !buf.starts_with(MAGIC)
             || (!options.contains(Options::IgnoreEndMagic)
