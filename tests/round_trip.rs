@@ -88,8 +88,7 @@ fn demo_round_trip() -> Result<()> {
         summary
             .chunk_indexes
             .iter()
-            .map(|ci| summary.stream_chunk(&ours, ci).unwrap())
-            .flatten(),
+            .flat_map(|ci| summary.stream_chunk(&ours, ci).unwrap()),
     ) {
         assert_eq!(whole?, by_chunk?);
     }
@@ -104,8 +103,7 @@ fn demo_round_trip() -> Result<()> {
             .unwrap()
             // At least parallelize the dumb.
             .into_par_iter()
-            .map(|(_k, v)| v)
-            .flatten()
+            .flat_map(|(_k, v)| v)
             .map(|e| (e.offset, summary.seek_message(&ours, ci, &e).unwrap()))
             .collect::<Vec<(u64, mcap::Message)>>();
 

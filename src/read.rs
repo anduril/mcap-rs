@@ -1073,10 +1073,7 @@ mod test {
 
     #[test]
     fn only_one_magic() {
-        assert!(matches!(
-            LinearReader::new(&MAGIC),
-            Err(McapError::BadMagic)
-        ));
+        assert!(matches!(LinearReader::new(MAGIC), Err(McapError::BadMagic)));
     }
 
     #[test]
@@ -1091,7 +1088,7 @@ mod test {
     #[test]
     fn only_one_magic_with_ignore_end_magic() {
         let mut reader =
-            LinearReader::new_with_options(&MAGIC, enum_set!(Options::IgnoreEndMagic)).unwrap();
+            LinearReader::new_with_options(MAGIC, enum_set!(Options::IgnoreEndMagic)).unwrap();
         assert!(reader.next().is_none());
     }
 }
