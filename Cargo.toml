@@ -8,7 +8,7 @@ categories = [ "science::robotics", "compression" ]
 readme = "README.md"
 documentation = "https://docs.rs/mcap-rs"
 license = "Apache-2.0"
-version = "0.3.1"
+version = "0.3.2"
 
 edition = "2021"
 
