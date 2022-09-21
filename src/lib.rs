@@ -16,7 +16,7 @@
 //! fn read_it() -> Result<()> {
 //!     let mapped = map_mcap("in.mcap")?;
 //!
-//!     for message in mcap::MessageStream::new(&mapped)? {
+//!     for message in mcap_rs::MessageStream::new(&mapped)? {
 //!         println!("{:?}", message?);
 //!         // Or whatever else you'd like to do...
 //!     }
@@ -29,10 +29,10 @@
 //!
 //! use anyhow::Result;
 //!
-//! use mcap::{Channel, records::MessageHeader, Writer};
+//! use mcap_rs::{Channel, records::MessageHeader, Writer};
 //!
 //! fn write_it() -> Result<()> {
-//!     // To set the profile or compression options, see mcap::WriteOptions.
+//!     // To set the profile or compression options, see mcap_rs::WriteOptions.
 //!     let mut out = Writer::new(
 //!         BufWriter::new(fs::File::create("out.mcap")?)
 //!     )?;

@@ -6,6 +6,7 @@ use std::io::BufWriter;
 
 use anyhow::Result;
 use itertools::Itertools;
+use mcap_rs as mcap;
 use memmap::Mmap;
 use rayon::prelude::*;
 use tempfile::tempfile;

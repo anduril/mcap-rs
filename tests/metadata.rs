@@ -5,6 +5,7 @@ use common::*;
 use std::io::BufWriter;
 
 use anyhow::Result;
+use mcap_rs as mcap;
 use memmap::Mmap;
 use tempfile::tempfile;
 

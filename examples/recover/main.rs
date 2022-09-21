@@ -8,6 +8,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::Parser;
 use enumset::enum_set;
 use log::*;
+use mcap_rs as mcap;
 use memmap::Mmap;
 
 #[derive(Parser, Debug)]

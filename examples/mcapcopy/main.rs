@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Parser;
 use log::*;
+use mcap_rs as mcap;
 use memmap::Mmap;
 
 #[derive(Parser, Debug)]
