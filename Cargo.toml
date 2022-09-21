@@ -1,5 +1,5 @@
 [package]
-name = "mcap"
+name = "mcap-rs"
 description = "A library for reading and writing Foxglove MCAP files"
 keywords = [ "foxglove", "mcap" ]
 categories = [ "science::robotics", "compression" ]
