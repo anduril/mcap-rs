@@ -577,8 +577,7 @@ impl<'a, W: Write + Seek> Writer<'a, W> {
             write_record(&mut ccw, &Record::SummaryOffset(offset))?;
         }
 
-        // In an incredibly bizarre move, the CRC in the footer _includes_
-        // part of the footer. All of the wat.
+        // Wat: the CRC in the footer _includes_ part of the footer.
         op_and_len(&mut ccw, op::FOOTER, 20)?;
         ccw.write_u64::<LE>(summary_start)?;
         ccw.write_u64::<LE>(summary_offset_start)?;
